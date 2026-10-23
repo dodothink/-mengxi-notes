@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>My0511 帖子存档 · 设置</title>
+<style>
+  :root { --ink:#1c2530; --dim:#6b7885; --line:#d7dee6; --blue:#336699; }
+  body { max-width: 560px; margin: 48px auto; padding: 0 24px;
+    font: 14px/1.7 "PingFang SC","Microsoft YaHei",system-ui,sans-serif; color: var(--ink); }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  p.lead { color: var(--dim); margin: 0 0 26px; }
+  section { border-top: 1px solid var(--line); padding: 18px 0; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  p { margin: 0 0 12px; }
+  .dim { color: var(--dim); }
+  button { padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--blue); background: var(--blue); color: #fff; border-radius: 3px; }
+  button.ghost { background: #fff; color: var(--ink); border-color: var(--line); }
+  button:hover { opacity: .88; }
+  code { background: #eef3f8; padding: 1px 5px; border-radius: 2px; }
+  #cur { font-weight: 600; }
+  input[type=number] { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; width: 56px; }
+  label.chk { display: flex; align-items: center; gap: 7px; }
+button[data-toggle]{border-radius:9px;padding:8px 12px;background:#f2f6f3;color:#176b54;border:1px solid #b9cfc1}button[data-toggle][aria-pressed=true]{background:#176b54;color:white}button:focus-visible{outline:3px solid #81b9a7;outline-offset:2px}
+</style>
+<link rel="stylesheet" href="glass.css">
+</head>
+<body>
+<p><button id="openWorkbench">工作台</button></p>
+  <div class="brand"><span class="brand-mark" aria-hidden="true">梦</span><h1>My0511 帖子存档</h1></div>
+  <p class="lead">帖子按楼层存成 Markdown 纯文本，不保存图片。</p>
+
+  <section>
+    <h2>自动巡查板块</h2>
+    <p class="dim">每隔一段时间读一遍「百姓话题」板块的列表页（不用逐帖打开），跟本地存档比对回复数：
+    新出现的主题会整帖采集，回复数变多的老帖会接着上次存到的楼层继续采，没有变化的帖子直接跳过。
+    读几页列表就能覆盖多久，看下面「巡查页数」——每页大约 50 个主题，2 页大概能覆盖近一天的更新。</p>
+    <p><label class="chk"><button type="button" data-toggle id="sweepEnabled">自动巡查</button> 开启自动巡查</label></p>
+    <p>巡查页数：<input type="number" id="sweepPages" min="1" max="10" step="1">
+      <button id="savePages" class="ghost">保存</button></p>
+    <p>巡查间隔：每隔 <input type="number" id="sweepMin" min="5" max="240" step="1" style="width:4.5em"> 到
+      <input type="number" id="sweepMax" min="5" max="240" step="1" style="width:4.5em"> 分钟随机巡查一次
+      <button id="saveRange" class="ghost">保存</button></p>
+    <p class="dim">每次巡查完，在这个范围里随机挑下一次的时间，每次都不一样。两个数填一样就是固定间隔。最短 5 分钟，最长 240 分钟。</p>
+    <p id="sweepMsg" class="dim"></p>
+  </section>
+
+  <section>
+    <h2>存档文件夹</h2>
+    <p>当前：<span id="cur">下载文件夹</span></p>
+    <p class="dim">选一个文件夹后，导出的帖子和索引都直接写进去，重复导出会覆盖同名文件。不选的话，文件会存到「下载 / My0511存档」。换电脑或换浏览器要各选一次。</p>
+    <p><button id="pick">选择文件夹</button> <button id="clear" class="ghost">改回下载文件夹</button></p>
+    <p id="msg" class="dim"></p>
+  </section>
+
+  <section>
+    <h2>备份与恢复（队列和设置）</h2>
+    <p class="dim">导出：待采集队列、正在采的帖子、定时发帖队列和规则、巡查和提醒设置、自动跟进名单、跳过记录，存成一个小文件。帖子正文不在里面，正文已经在存档文件夹的 Markdown 文件里。<br>
+    导入：换电脑、换浏览器或清了浏览器数据后用。队列会合并去重，不会重复；导入后采集先处于暂停，点「▶ 恢复采集」才开始；定时发帖一律以「暂缓」导入，确认后再点「重新排队」，不会一导入就发出去。<br>
+    也能导入工作台「备份浏览器数据」导出的旧文件。</p>
+    <p><button id="bkExport">导出队列和设置</button> <button id="bkImport" class="ghost">从文件导入…</button>
+    <input type="file" id="bkFile" accept=".json,application/json" hidden></p>
+    <p id="bkMsg" class="dim"></p>
+  </section>
+
+  <section>
+    <h2>怎么用</h2>
+    <p>在论坛里打开一个帖子，点工具栏上的插件图标：<br>
+    <code>采集整帖</code> 从第一页读到最后一页。<br>
+    <code>只取新增楼层</code> 从上次存到的地方接着读，用于跟进还在更新的长帖。<br>
+    <code>导出 Markdown</code> 把已存的楼层写成文件。</p>
+    <p class="dim">采集在后台进行，每页之间停两到四秒，面板关掉也不影响。中途断了不会丢，重新点一次会接着上次的位置。
+    打开版块列表页，插件面板下方还有「立即巡查」，可以随时手动跑一次自动巡查。</p>
+  </section>
+
+  <script src="toggle-button.js"></script>
+  <script src="fs.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

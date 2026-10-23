@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+secrets/
+runtime/
+*.sqlite
+*.sqlite-*
+*.log
+
+My0511_v*-dev.zip
+
+dist/
+*队列备份*.json
+截图识别*/

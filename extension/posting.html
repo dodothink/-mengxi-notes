@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang=zh>
+<head>
+<meta charset=utf-8>
+<title>My0511 定时发帖</title>
+<style>
+  :root{--ink:#1c2530;--dim:#6b7885;--line:#d7dee6;--blue:#336699;--wash:#eef3f8}
+  *{box-sizing:border-box}
+  body{max-width:860px;margin:32px auto 60px;padding:0 24px;font:14px/1.65 'PingFang SC','Microsoft YaHei',system-ui,sans-serif;color:var(--ink)}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+  h1{font-size:17px;margin:0}
+  h2{font-size:14px;margin:0 0 10px}
+  section{border-top:1px solid var(--line);padding:18px 0}
+  .status{background:var(--wash);border-radius:3px;padding:10px 12px;white-space:pre-wrap;margin-bottom:10px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+  button{padding:6px 14px;font:inherit;font-size:13px;cursor:pointer;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:3px}
+  button.ghost,button.mini{background:#fff;color:var(--ink);border-color:var(--line)}
+  button.ghost:hover:not(:disabled),button.mini:hover:not(:disabled){border-color:var(--blue);color:var(--blue)}
+  button.mini{padding:2px 9px;font-size:12px}
+  button:disabled{opacity:.45;cursor:default}
+  .field{margin:8px 0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+  .lab{width:100px;color:var(--dim);flex:none}
+  input,select,textarea{font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:3px}
+  .wide{flex:1;min-width:260px}
+  textarea.wide{min-height:200px;resize:vertical}
+  .num{width:76px}
+  .dim{color:var(--dim);font-size:12.5px}
+  .msg{color:var(--blue);white-space:pre-wrap;margin:6px 0 0;min-height:1em}
+  .hide{display:none!important}
+  .item{border:1px solid var(--line);border-left:4px solid var(--line);border-radius:3px;padding:8px 10px;margin-bottom:8px}
+  .item.st-pending,.item.st-retry,.item.st-posting{border-left-color:var(--blue)}
+  .item.st-done{opacity:.65}
+  .item.st-failed,.item.st-expired{border-left-style:dashed;border-left-color:var(--ink)}
+  .item.st-held{border-left-style:dotted;border-left-color:var(--ink)}
+  .ihead{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+  .badge{font-weight:600;white-space:nowrap}
+  .kind{color:var(--dim);white-space:nowrap}
+  .ititle{font-weight:600;word-break:break-all}
+  .isnip{margin:3px 0;word-break:break-all;white-space:pre-wrap}
+  .imeta{color:var(--dim);font-size:12.5px}
+  .ops{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center}
+  a{color:var(--blue)}
+  .logrow{display:flex;gap:10px;padding:5px 0;border-bottom:1px dashed var(--line);font-size:13px}
+  .ltime{color:var(--dim);white-space:nowrap}
+  .lres{font-weight:600;white-space:nowrap}
+  .ltext{flex:1;word-break:break-all}
+  .empty{color:var(--dim)}
+  .sample{background:var(--wash);padding:10px;border-radius:3px;font-size:12px;white-space:pre-wrap;overflow-x:auto}
+  .filebtn{display:inline-block;padding:6px 14px;border:1px solid var(--line);border-radius:3px;cursor:pointer;font-size:13px;background:#fff}
+  .filebtn:hover{border-color:var(--blue);color:var(--blue)}
+  .filebtn input{display:none}
+  .switch{font-weight:600;display:flex;align-items:center;gap:6px}
+button[data-toggle]{border-radius:9px;padding:8px 12px;background:#f2f6f3;color:#176b54;border:1px solid #b9cfc1}button[data-toggle][aria-pressed=true]{background:#176b54;color:white}button:focus-visible{outline:3px solid #81b9a7;outline-offset:2px}
+</style>
+<link rel="stylesheet" href="glass.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="brand-mark" aria-hidden="true">梦</span><h1>My0511 定时发帖</h1></div>
+  <label class=switch><button type="button" data-toggle id="enabled">定时发帖</button> 开启定时发帖</label>
+</header>
+<div class=status id=status>读取中……</div>
+<p class=dim>现在北京时间：<b id=bjNow>--</b>（本页所有时间都是北京时间）</p>
+<div class=row>
+  <button id=reroll class=ghost>重新随机下一次时间</button>
+  <button id=postNow class=ghost>立即发下一条</button>
+  <button id=resume class='ghost hide'>恢复运行</button>
+</div>
+<p class=dim>发帖用的是当前这个 Chrome 个人资料里登录的论坛账号。每个账号用一个单独的个人资料，各自装一份插件、各自一个队列。发帖时浏览器要开着，电脑不能睡眠。</p>
+
+<section>
+  <h2 id=formTitle>添加一条</h2>
+  <div class=field><span class=lab>类型</span>
+    <label><input type=radio name=kind value=thread checked> 发新帖</label>
+    <label><input type=radio name=kind value=reply> 回复帖子</label>
+  </div>
+  <div class='field only-thread'><span class=lab>版块号</span><input id=fid value=152 class=num>
+    <span class=dim>百姓话题＝152，其他版块看网址里 f 后面、b 前面的数字</span></div>
+  <div class='field only-thread'><span class=lab>分类</span>
+    <select id=typeid>
+      <option value=''>不选</option>
+      <option value=339>镇江城事</option>
+      <option value=341>百姓心声</option>
+      <option value=342>焦点话题</option>
+      <option value=1019>美食旅游</option>
+      <option value=598>咨询求助</option>
+    </select>
+    <span class=dim>这几个分类是百姓话题的，其他版块请选「不选」</span></div>
+  <div class='field only-thread'><span class=lab>标题</span><input id=subject class=wide maxlength=80></div>
+  <div class='field only-reply hide'><span class=lab>回复哪个帖子</span>
+    <input id=target class=wide placeholder='粘贴帖子网址，例如 https://bbs.my0511.com/f152b-t9083846z'></div>
+  <div class=field><span class=lab>正文</span><textarea id=message class=wide></textarea></div>
+  <div class=field><span class=lab>什么时候发</span>
+    <label><input type=radio name=when value=rel checked> 相对时间</label>
+    <label><input type=radio name=when value=at> 指定时间</label>
+    <label><input type=radio name=when value=auto> 自动安排</label>
+    <span class='dim tzname'></span></div>
+  <div class=field id=onlyRel><span class=lab>从现在算起</span>
+    <label><input type=radio name=rel value=now checked> 现在就发（1 分钟内）</label>
+    <label><input type=radio name=rel value=after> <input type=number id=relMin value=10 min=1 class=num> 分钟后</label>
+    <label><input type=radio name=rel value=within> 未来 <input type=number id=relHours value=3 min=1 max=72 class=num> 小时内随机挑时间</label>
+  </div>
+  <div class='field hide' id=onlyAt><span class=lab>指定时间</span><input type=datetime-local id=at>
+    <span class=dim>北京时间，到点就发，不受下面规则限制</span></div>
+  <div class='field hide' id=quickAt><span class=lab>快捷选择</span>
+    <button class=mini data-add=30>30 分钟后</button>
+    <button class=mini data-add=60>1 小时后</button>
+    <button class=mini data-add=180>3 小时后</button>
+    <button class=mini data-day=0 data-hm=20:00>今晚 20:00</button>
+    <button class=mini data-day=1 data-hm=09:00>明早 09:00</button>
+    <button class=mini data-day=1 data-hm=20:00>明晚 20:00</button>
+    <span class=dim>点一下就填好，再按需要微调</span></div>
+  <div class=field id=onlyAuto><span class=lab>可选限制</span>
+    不早于 <input type=datetime-local id=notBefore> 不晚于 <input type=datetime-local id=notAfter>
+    <span class=dim>都可以不填；过了「不晚于」还没轮到就不发了</span></div>
+  <div class=row><button id=save>加入队列</button><button id=cancel class='ghost hide'>取消编辑</button></div>
+  <p id=formMsg class=msg></p>
+</section>
+
+<section>
+  <h2>队列 <span id=qcount class=dim></span></h2>
+  <p class=dim>自动安排的按队列顺序一条一条发，可以上移下移调整顺序。</p>
+  <div class=row>
+    <label><button type="button" data-toggle id="selAll">全选</button> 全选</label>
+    <button id=delSel class=ghost>删除选中（<span id=selN>0</span>）</button>
+    <button id=delAll class=ghost>全部删除</button>
+    <button id=clearDone class=ghost>清掉已发出和已过期的</button>
+  </div>
+  <div id=queue></div>
+</section>
+
+<section>
+  <h2>自动安排的规则</h2>
+  <p class=dim>所有时间一律按<b>北京时间</b>（和论坛显示的时间一致）：活跃时段、每天计数、指定时间都是。</p>
+  <div class=field><span class=lab>活跃时段</span><input type=time id=startHM> 到 <input type=time id=endHM></div>
+  <div class=field><span class=lab>每天最多</span><input type=number id=dailyMax min=0 class=num> 条 <span class=dim>0＝不限</span></div>
+  <div class=field><span class=lab>最短间隔</span><input type=number id=minGapMin min=1 class=num> 分钟</div>
+  <div class=field><span class=lab>平均间隔</span><input type=number id=meanGapMin min=5 class=num> 分钟
+    <span class=dim>实际间隔是随机的，有时隔得近，有时隔很久</span></div>
+  <div class=field><span class=lab>每周安静</span><input type=number id=quietDays min=0 max=3 class=num> 天
+    <span class=dim>每周随机挑这几天整天不发，0＝不安排</span></div>
+  <div class=field><label><button type="button" data-toggle id="noDoublePost">防止连续发帖</button> 防连帖：回复前先看帖子，最后一楼已经是自己就暂缓不发</label></div>
+  <div class=field><span class=lab>我的论坛昵称</span><input id=myName class=wide style='max-width:200px' placeholder='第一次回复成功后会自动填上'>
+    <span class=dim>防连帖靠它认出哪一楼是你自己</span></div>
+  <div class=field><span class=lab>同帖每天回复</span><input type=number id=replyPerThreadDaily min=0 class=num> 次
+    <span class=dim>0＝不限</span></div>
+  <div class=row><button id=saveCfg>保存规则</button></div>
+  <p id=cfgMsg class=msg></p>
+</section>
+
+<section>
+  <h2>导入 / 导出</h2>
+  <p class=dim>导出的是还没发的内容，可以导入到另一个 Chrome 个人资料（另一个账号）的插件里。也可以自己写 JSON 文件批量导入，格式见下面的示例。</p>
+  <div class=row>
+    <button id=export class=ghost>导出队列</button>
+    <label class=filebtn>导入文件<input type=file id=importFile accept='.json,application/json'></label>
+  </div>
+  <p id=ioMsg class=msg></p>
+  <pre class=sample id=sample></pre>
+</section>
+
+<section>
+  <h2>发帖记录</h2>
+  <div id=log></div>
+</section>
+<script src="toggle-button.js"></script>
+  <script src=posting.js></script><script src=posting-bulk.js></script>
+</body>
+</html>

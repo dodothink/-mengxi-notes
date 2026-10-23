@@ -1,0 +1,27 @@
+/* Shared, local-only glass surfaces. Opaque fallback remains readable. */
+:root{--ink:#202d49;--dim:#596681;--line:#c8d3e6;--blue:#405dc5;--wash:#eaf0fb;--bg:#f0f3fa;color-scheme:light}
+html{min-height:100%;background:#eff2f9}
+body{color:var(--ink);background:radial-gradient(ellipse at 0 0,#dce5ff 0,transparent 55%),radial-gradient(ellipse at 100% 20%,#e9e0f8 0,transparent 48%),radial-gradient(ellipse at 65% 100%,#dceff1 0,transparent 50%),#f0f3fa;background-attachment:fixed;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif}
+.brand{display:flex;align-items:center;gap:13px}.brand-mark{display:grid;place-items:center;flex:0 0 52px;width:52px;height:52px;border-radius:17px;background:linear-gradient(145deg,#ffffffef,#ffffff66);border:1px solid #fff;box-shadow:inset 0 1px 1px #fff,0 8px 22px #5368a122;font-size:31px;font-weight:500;color:#405593;letter-spacing:0;line-height:1}
+.brand small,.head small{font-size:10px;letter-spacing:2px;color:#58668e}.brand h1{letter-spacing:.02em}
+section,.thread{background:#ffffffdb;border:1px solid #ffffff;border-radius:22px;box-shadow:inset 0 1px 0 #fff,0 8px 28px #34476d09;padding:22px;margin-top:18px}
+button,button.ghost,button.mini,button[data-toggle],.thread-choice{border:1px solid #cbd5e7;border-radius:13px;color:var(--ink);background:linear-gradient(150deg,#fffffff2,#f5f7fbbd);box-shadow:inset 0 1px 0 #fff,0 2px 5px #384b7110;transition:background .18s,box-shadow .18s,border-color .18s;min-height:36px}
+button:hover:not(:disabled),button.ghost:hover:not(:disabled),button.mini:hover:not(:disabled){background:#fff;border-color:#8495c5;box-shadow:0 4px 12px #4055801c;color:#30468c;opacity:1}
+button.go,button.halt.resume,#generate,#saveSettings,#adopt{background:linear-gradient(140deg,#536dd0,#4052a8);color:#fff;border-color:#4a60b6;box-shadow:inset 0 1px 0 #ffffff35,0 5px 12px #455eb324}
+button.go:hover:not(:disabled),button.halt.resume:hover:not(:disabled),#generate:hover:not(:disabled),#saveSettings:hover:not(:disabled),#adopt:hover:not(:disabled){background:#394da1;color:#fff}
+button[data-toggle][aria-pressed=true],.thread-choice[aria-pressed=true],.toggle[aria-pressed=true]{color:#304995;background:linear-gradient(145deg,#e5ebff,#f0edff);border-color:#869bdb}
+button:disabled{opacity:.45;cursor:default;box-shadow:none}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #526bcc;outline-offset:3px}
+input,select,textarea,input[type=search]{color:var(--ink);background:#ffffffeb;border:1px solid #c5cfe0;border-radius:12px;padding:10px 12px;font:inherit;max-width:100%;box-sizing:border-box}
+input::placeholder,textarea::placeholder{color:#65718b}textarea{line-height:1.8;resize:vertical}
+.status,#notice{border:1px solid #d6dfef;background:#f5f7fce6;border-radius:14px;color:#3b4d76;padding:12px 14px;overflow-wrap:anywhere}
+#notice:empty{display:none}.pill,.pill.on{background:#f5f7fbe0;border:1px solid #fff;color:#4b608c;box-shadow:0 2px 8px #43567a09}.pill.on{background:#e5eee9;color:#28604c}
+.bar{background:#dce3f2}.bar i{background:linear-gradient(90deg,#526dcb,#9081cc)}
+.sub,.none,.dim,.muted,small{color:var(--dim)}.toggle:after{background:#e6ebf7}.toggle[aria-pressed=true]:after{background:#ffffffc9}
+.item{border-radius:14px;background:#ffffffb3}.sample,code{background:#eaf0fa;border-radius:8px}.filebtn{border-radius:12px;background:#ffffffd9}.tabs{background:#ffffff70;border:1px solid #fff;padding:5px;border-radius:18px}.tabs button{box-shadow:none}
+@supports ((backdrop-filter:blur(20px)) or (-webkit-backdrop-filter:blur(20px))){section,.thread,.brand-mark{background-color:#ffffffb8;backdrop-filter:blur(20px) saturate(120%);-webkit-backdrop-filter:blur(20px) saturate(120%)}}
+@media(prefers-reduced-motion:reduce){button{transition:none}}
+@media(prefers-reduced-transparency:reduce){section,.thread,.brand-mark{background:#fff;backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(max-width:600px){main{margin:22px auto;padding:0 16px 30px}section{padding:18px}header h1{font-size:22px}input{min-width:0;width:100%}.wide{min-width:0}header{gap:12px}.brand-mark{flex-basis:46px;width:46px;height:46px;font-size:28px}}
+
+.tabs{display:flex;margin:0 0 14px;gap:4px}.tabs button{flex:1;min-width:0;padding:8px 4px;border:1px solid transparent;background:transparent;font-size:12px;color:var(--dim)}.tabs button.on{background:#ffffffed;border-color:#fff;color:#304995;font-weight:600;box-shadow:0 3px 10px #34477512}

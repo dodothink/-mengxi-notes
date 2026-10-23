@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "My0511 帖子存档 · 纯插件版",
+  "version": "4.2.5",
+  "description": "梦溪论坛文字存档与定时发帖。存档按帖子编号合并写入同一文件夹，不需要本地服务。",
+  "default_locale": "zh_CN",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "downloads",
+    "offscreen",
+    "alarms",
+    "tabs",
+    "scripting",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://bbs.my0511.com/*",
+    "https://*.my0511.com/*"
+  ],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "My0511 帖子存档",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "options.html",
+  "version_name": "4.2.5"
+}

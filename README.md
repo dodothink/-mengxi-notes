@@ -1,2 +1,9 @@
-# -mengxi-notes
-    梦溪笔记：My0511 论坛帖子采集与存档插件
+# 梦溪笔记 · 4.2.5
+
+无需 Node.js、Agent、Kimi 或 Telegram。下载并解压源码包，Chrome 打开 chrome://extensions，启用开发者模式，加载本目录的 extension 文件夹。选择存档文件夹后开始采集；遇到验证码请在浏览器人工处理。
+
+完整说明：[使用说明](使用说明.md)。
+
+## 验证
+
+49项测试已通过。

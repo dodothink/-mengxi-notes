@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+<link rel="stylesheet" href="glass.css">
+</head>
+<body>
+
+  <div class="head">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">梦</span><div><small>MY0511</small><h1>梦溪手记</h1></div></div>
+    <div class="pill" id="pill"><i></i><span id="pilltext">检查中…</span></div>
+  </div>
+
+  <div class="row">
+    <button id="haltCollect" class="halt">⏹ 停止采集</button>
+    <button id="haltPost" class="halt">⏹ 停止发帖</button>
+  </div>
+  <div class="haltnote hide" id="haltNote"></div>
+
+  <div class="thread" id="thread"><div class="title">从正在浏览的页面开始</div><div class="sub">打开论坛帖子、版块或搜索结果，再点这里。</div></div>
+
+  <div id="one" class="hide">
+    <div class="row">
+      <button id="full" class="go">采集整帖</button>
+      <button id="update">只取新增楼层</button>
+    </div>
+    <div class="row">
+      <button id="stop" title="停止这个帖子并暂停采集，队列保留">停止</button>
+      <button id="export">导出 Markdown</button>
+    </div>
+    <button class="toggle" id="watchbox" aria-pressed="false" data-label="跟进这个帖子">跟进这个帖子 · 已关闭</button>
+    <button class="toggle" id="imagebox" aria-pressed="false" data-label="保存这个帖子的图片">保存这个帖子的图片 · 已关闭</button>
+  </div>
+
+  <div id="batch" class="hide">
+    <p id="searchSummary" aria-live="polite"></p>
+    <input id="filterThreads" type="search" placeholder="筛选标题或作者" aria-label="筛选帖子" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    <p class="sub">已帮你选好未存和有更新的帖子。点卡片可取消，只处理当前页。</p>
+    <div class="list" id="links"></div>
+    <div class="row">
+      <button id="pickNew">选未存/有更新</button>
+      <button id="all">全选</button>
+      <button id="queue" class="go">采集选中的帖子</button>
+    </div>
+  </div>
+
+  <details><summary>自动采集与巡查<span>按需开启</span></summary>
+  <div class="status" id="sweepStatus">正在读取巡查状态……</div>
+  <div class="row">
+    <button id="sweepNow" class="go">立即巡查「百姓话题」</button>
+  </div>
+  <button class="toggle" id="sweepEnabled" aria-pressed="false" data-label="定时巡查板块">定时巡查板块 · 已关闭</button>
+  <button class="toggle" id="watchEnabled" aria-pressed="false" data-label="每小时更新关注的帖子">每小时更新关注的帖子 · 已关闭</button></details>
+
+  <div class="status" id="status" role="status">打开一个帖子、版块列表页或搜索结果页。</div>
+  <button id="skipJob" class="hide">跳过这个帖子，接着采下一个</button>
+  <div class="bar"><i id="bar"></i></div>
+
+  <footer>
+    <span id="folder">存档位置：下载文件夹</span>
+    <a id="settings">设置</a>
+  </footer>
+
+  <script src="md.js"></script>
+  <script src="fs.js"></script>
+  <script src="archive-merge.js"></script>
+  <script src="archive-folder.js"></script>
+  <script src="popup.js"></script>
+<script src=popup-post.js></script></body>
+</html>

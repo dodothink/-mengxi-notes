@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>My0511 控制台</title><link rel="stylesheet" href="control.css">
+<link rel="stylesheet" href="glass.css"><body><main><header><div class="brand"><span class="brand-mark" aria-hidden="true">梦</span><div><small>MY0511 · WORKSPACE</small><h1>梦溪工作台</h1></div></div><button id="refresh">刷新</button></header>
+<p id="notice" role="status"></p>
+<section><h2>运行控制</h2><p id="status">读取中…</p><div class="row"><button id="pause">暂停全部</button><button id="resumeCollect">恢复采集</button><button id="resumePost">恢复发帖</button><button id="backup">备份浏览器数据</button></div></section>
+<section id="human" hidden><h2>等待人工处理</h2><p id="reason"></p><div class="row"><button id="openChallenge">打开原页面</button><button id="verifyChallenge">我已处理，检查页面</button></div><p class="muted">请在原浏览器页面完成验证。验证完成不会解除你手动设置的暂停，也不会自动重发结果不明的帖子。</p></section>
+<section id="alertsBox"><h2>提醒</h2><p class="muted">有人回复你、关注的帖子或 ID 改楼删楼、关键词出现时，这里记一条并弹系统通知。只提醒最近 3 天内发的楼。</p><div class="row"><button id="alertsRead">全部标为已读</button><button id="alertsClear">清空</button></div><div id="alerts"></div></section>
+<section><h2>提醒与存图设置</h2>
+<label>我的论坛 ID（用来识别别人回复你） <input id="myName" autocomplete="off"></label>
+<label>关注的 ID（每行一个；他们改楼、删楼时提醒） <textarea id="watchUsers" rows="4"></textarea></label>
+<label>关键词（每行一个；新帖标题或新楼正文出现时提醒） <textarea id="keywords" rows="3"></textarea></label>
+<label>保存图片的 ID（每行一个；他们发的图存进存档文件夹 _图片/） <textarea id="imageUsers" rows="3"></textarea></label>
+<button id="saveTools">保存设置</button><p id="toolsNote" class="muted"></p></section>
+<section><h2>存档全文搜索</h2><p class="muted">在存档文件夹里搜，第一次要读全部文件，稍等几秒。</p>
+<div class="row"><label>作者 <input id="qAuthor" autocomplete="off"></label><label>关键词 <input id="qText" autocomplete="off"></label></div>
+<div class="row"><label>从 <input id="qFrom" type="date"></label><label>到 <input id="qTo" type="date"></label><button id="search">搜索</button></div>
+<p id="searchNote" class="muted"></p><div id="results"></div></section>
+<section><h2>按 ID 补采</h2><p class="muted">打开论坛上这个 ID 的发帖搜索页，再点插件图标，勾选后批量采集。ID 的论坛编号从已存的楼层里找；找不到时可以直接填编号。</p>
+<div class="row"><label>ID 或论坛编号 <input id="uidName" autocomplete="off"></label><button id="openUid">打开他的发帖列表</button></div><p id="uidNote" class="muted"></p></section>
+<section><h2>存档体检</h2><p class="muted">检查重复文件、坏文件、缺楼的帖子，可以一键修复（合并重复、把缺楼的帖子整帖重采）。</p>
+<div class="row"><button id="check">开始体检</button><button id="fixDup" hidden>合并重复文件</button><button id="fixGap" hidden>整帖重采缺楼的帖子</button></div><pre id="checkOut"></pre></section>
+<section><h2>核对取证指纹</h2><p class="muted">核对某个帖子的存档文件：每层楼的正文和采集时记下的指纹是否一致（一致＝存档后没被改过）。</p>
+<div class="row"><label>帖子编号 <input id="fpTid" autocomplete="off" placeholder="例如 9085235"></label><button id="fpCheck">核对</button></div><pre id="fpOut"></pre></section>
+<div id="addons"></div>
+<section><h2>需要核实的发帖</h2><div id="reviews"></div></section><section><h2>最近事件</h2><pre id="events"></pre></section>
+</main><script src="fs.js"></script><script src="md.js"></script><script src="archive-merge.js"></script><script src="archive-folder.js"></script><script src="control-ui.js"></script><script src="control-tools.js"></script><script src="addons/control-addon.js"></script></body></html>

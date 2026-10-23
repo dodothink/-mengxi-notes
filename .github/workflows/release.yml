@@ -1,0 +1,42 @@
+name: Publish installable release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release.yml']
+permissions:
+  contents: write
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test and package
+        run: |
+          node --test test/*.test.mjs
+          mkdir -p dist/MengxiNotes-4.2.5
+          cp -R extension dist/MengxiNotes-4.2.5/extension
+          cp README.md 使用说明.md 发布安装说明.md dist/MengxiNotes-4.2.5/
+          cd dist
+          zip -qr MengxiNotes-4.2.5.zip MengxiNotes-4.2.5
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cp 发布安装说明.md dist/INSTALL.md
+          cd dist
+          sha256sum MengxiNotes-4.2.5.zip INSTALL.md > SHA256SUMS
+          printf '%s\n' '下载 MengxiNotes-4.2.5.zip，解压后在 Chrome 扩展管理页开启开发者模式，加载其中的 extension 文件夹。无需 Node.js、Kimi 或 Telegram。' > release-notes.md
+          if gh release view 'v4.2.5' >/dev/null 2>&1; then
+            echo 'Release already exists; preserving its assets.'
+            exit 0
+          fi
+          gh release create 'v4.2.5' 'MengxiNotes-4.2.5.zip' INSTALL.md SHA256SUMS --target "$GITHUB_SHA" --title '梦溪笔记 v4.2.5' --notes-file release-notes.md

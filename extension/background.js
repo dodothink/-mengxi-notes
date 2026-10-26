@@ -357,11 +357,73 @@ async function markHidden(tid, startedAt) {
 // 同一个帖子只留一个文件，楼层取并集，编辑历史不丢，另一个插件写的内容也会合并进来。
 // 文件夹授权失效时不写、不退回「下载」（「下载」会整份覆盖，冲掉合并结果），
 // 记下待写，等在面板里重新授权后补写。
-async function folderWrite(rec) {
+// 4.3.0：机读存档的发布序号高水位（按来源标识分开记），用来识别「存档文件夹被旧备份覆盖」
+async function noteDataSeq(d) {
+  if (!d || !d.sourceId) return;
+  await Safety.update('archiveDataSeq', m => { m = m || {}; m[d.sourceId] = Math.max(m[d.sourceId] || 0, d.seq || 0); return m; }, {});
+}
+async function noteDataResult(r) {
+  if (r && r.data && r.data.sourceId) {
+    await noteDataSeq(r.data); await chrome.storage.local.remove('archiveDataError');
+    // 4.3.2：和读帖联动——每个帖子写完，发现机读存档还没收录全（或上次重建中断），马上在后台接着补，不等定时检查
+    if (r.data.coverage !== 'full' || r.data.rebuilding) maybeAutoRebuild(true).catch(() => {});
+  }
+  else if (r && r.dataError) await set('archiveDataError', { at: Date.now(), error: r.dataError });
+}
+// 这次采集读了哪些页、是否完整
+function captureOf(job, ok, reason) {
+  if (!job) return { known: false };
+  const start = Math.max(1, job.startPage || 1);
+  const last = Math.max(start, job.lastPage || start);
+  const readTo = ok ? last : Math.max(start - 1, (job.page || start) - 1);
+  return { known: true, mode: job.auto ? 'queue' : 'manual', ok: !!ok,
+    complete: !!ok && start === 1 && !!job.toEnd, scope: start === 1 && job.toEnd ? 'full' : 'incremental',
+    pagesRead: readTo >= start ? [start, readTo] : [], totalPages: job.lastPage || null,
+    startedAt: job.startedAt ? new Date(job.startedAt).toISOString() : null, finishedAt: new Date().toISOString(), reason: reason || null };
+}
+// 采集失败/跳过，记进机读清单（没选文件夹或没授权时安静跳过）
+async function reportFailure(job, reason) {
+  try {
+    if (!(await get('useFolder', false))) return;
+    await ensureOffscreen();
+    const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_FAIL', tid: String(job.tid), fid: job.fid ? String(job.fid) : null,
+      reason, capture: captureOf(job, false, reason), floorSeqs: await get('archiveDataSeq', {}) });
+    if (r && r.ok) await noteDataSeq(r);
+  } catch (e) { /* 机读清单记不上不影响采集 */ }
+}
+// 从文件夹现有 Markdown 分批重建机读数据（首次启用 4.3 或怀疑不一致时，在设置页手动触发）
+let dataRebuilding = false;
+async function rebuildArchiveData() {
+  dataRebuilding = true;
+  let after = '', processed = 0;
+  try {
+    await set('archiveDataRebuild', { running: true, processed: 0, total: null, startedAt: Date.now() });
+    for (let i = 0; i < 2000; i++) {
+      await ensureOffscreen();
+      let r, tries = 0;
+      for (;;) { // 4.3.1：一批失败先等几秒重试 3 次；重建本身可断点续做
+        r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_REBUILD', after, limit: 150, floorSeqs: await get('archiveDataSeq', {}) });
+        if (r && r.ok) break;
+        if (r && r.needPermission) throw new Error('存档文件夹需要重新授权');
+        if (++tries >= 3) throw new Error((r && r.error) || '重建失败');
+        await sleep(5000 * tries);
+      }
+      await noteDataSeq(r);
+      processed += r.processed; after = r.next;
+      await set('archiveDataRebuild', { running: !r.done, processed, total: r.total, startedAt: (await get('archiveDataRebuild', {})).startedAt, doneAt: r.done ? Date.now() : null });
+      if (r.done) break;
+    }
+  } catch (e) {
+    await set('archiveDataRebuild', { running: false, processed, error: String(e.message || e), at: Date.now() });
+  } finally { dataRebuilding = false; }
+}
+async function folderWrite(rec, capture) {
   const md = MD.buildThread(rec.thread, rec.floors, { foldFiller: await get('foldFiller', false) });
   const fileName = MD.fileNameFor(rec.thread, rec.floors);
   await ensureOffscreen();
-  const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_WRITE', tid: String(rec.thread.tid), fileName, markdown: md });
+  const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_WRITE', tid: String(rec.thread.tid), fileName, markdown: md,
+    capture: capture || { known: false }, floorSeqs: await get('archiveDataSeq', {}) });
+  if (r && r.ok) await noteDataResult(r);
   if (!r || !r.ok) {
     const e = new Error((r && r.error) || (r && r.needPermission ? '存档文件夹需要重新授权' : '写入失败'));
     e.needPermission = !!(r && r.needPermission); e.noFolder = !!(r && r.noFolder);
@@ -370,13 +432,13 @@ async function folderWrite(rec) {
   return r.fileName;
 }
 
-async function autoExport(rec) {
+async function autoExport(rec, capture) {
   let fileName;
   let useFolder = await get('useFolder', false);
   if (useFolder && !(await FS.getHandle().catch(() => null))) { useFolder = false; await set('useFolder', false); }
   if (useFolder) {
     try {
-      fileName = await folderWrite(rec);
+      fileName = await folderWrite(rec, capture);
       await set('folderAuthNeeded', false);
       await chrome.storage.local.remove('lastExportError');
     } catch (e) {
@@ -581,7 +643,7 @@ async function runJob() {
         if (rec && cur.toEnd && (cur.startPage || 1) === 1) await markHidden(cur.tid, cur.startedAt);
         if (rec) { try { await saveImages(cur.tid); } catch (e) { await Safety.event('images_failed', { tid: cur.tid, error: e.message }); } }
         const rec2 = await get(key(cur.tid), null);
-        if (rec2) await autoExport(rec2);
+        if (rec2) await autoExport(rec2, captureOf(cur, true));
         cur.state = 'done'; cur.finishedAt = Date.now();
         await Safety.update('job', j => j?.id === cur.id && j.state === 'running' ? cur : j, null);
         await setBadge();
@@ -619,6 +681,7 @@ async function runJob() {
               const rec = (await get(key(cur.tid), null)) || { floors: [], thread: { tid: cur.tid, fid: cur.fid } };
               rec.failReason = e.message; rec.failedAt = Date.now();
               await set(key(cur.tid), rec);
+              reportFailure(cur, rec.failReason);
               cur.state = 'done'; cur.error = ''; cur.finishedAt = Date.now(); cur.skipped = e.message;
               await Safety.update('job', j => j?.id === cur.id && j.state === 'running' ? cur : j, null);
               await setBadge();
@@ -636,6 +699,7 @@ async function runJob() {
           const rec = (await get(key(cur.tid), null)) || { floors: [], thread: { tid: cur.tid, fid: cur.fid } };
           rec.failReason = e.message; rec.failedAt = Date.now();
           await set(key(cur.tid), rec);
+          reportFailure(cur, rec.failReason);
           cur.state = 'done'; cur.error = ''; cur.finishedAt = Date.now(); cur.skipped = e.message;
           await Safety.update('job', j => j?.id === cur.id && j.state === 'running' ? cur : j, null);
           await setBadge();
@@ -652,6 +716,7 @@ async function runJob() {
           const rec = (await get(key(cur.tid), null)) || { floors: [], thread: { tid: cur.tid, fid: cur.fid } };
           rec.failReason = String(e.message || e) + '（连续 3 次失败，已跳过）'; rec.failedAt = Date.now();
           await set(key(cur.tid), rec);
+          reportFailure(cur, rec.failReason);
           cur.state = 'done'; cur.error = ''; cur.finishedAt = Date.now(); cur.skipped = rec.failReason;
           await Safety.update('job', j => j?.id === cur.id && j.state === 'running' ? cur : j, null);
           await setBadge();
@@ -678,7 +743,7 @@ async function runJob() {
       if (!accepted) break;
       if (fresh.page <= fresh.lastPage) await sleep(MIN_GAP + Math.random() * (MAX_GAP - MIN_GAP));
     }
-  } finally { running = false; await setBadge(); }
+  } finally { running = false; await setBadge(); maybeAutoRebuild().catch(() => {}); }
 }
 
 // 定时跟进：看最后一页有没有新楼，有就补齐并导出
@@ -838,7 +903,26 @@ async function sweepDue() {
 }
 
 // 每分钟一次：巡查到点且空闲就先巡查（巡查结束会接着跑队列），否则继续跑队列
+// 4.3.1：机读存档自动维护。没收录全（首次启用、换了文件夹、发现旧备份覆盖）或上次重建中断时，
+// 空闲时自动在后台补齐，不用手动点。最多每 10 分钟检查一次。
+async function maybeAutoRebuild(knownIncomplete = false) {
+  if (dataRebuilding) return;
+  if (!(await get('useFolder', false)) || (await get('folderAuthNeeded', false))) return;
+  // 读帖刚写完、已知没收录全：直接开始（重建和采集写入由文件锁串行，互不打架）
+  if (knownIncomplete) { rebuildArchiveData().catch(() => {}); return; }
+  if (running || sweeping) return;
+  const last = await get('archiveDataAutoCheck', 0);
+  if (Date.now() - last < 10 * 60000) return;
+  await set('archiveDataAutoCheck', Date.now());
+  try {
+    await ensureOffscreen();
+    const st = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_STATUS' });
+    if (!st || !st.ok) return;
+    if (!st.exists || st.coverage !== 'full' || st.rebuilding) rebuildArchiveData().catch(() => {});
+  } catch (e) { /* 下次再看 */ }
+}
 async function onTick() {
+  maybeAutoRebuild().catch(() => {});
   if (!running && !sweeping && (await sweepDue())) return sweepBoard(false);
   return runJob();
 }
@@ -851,7 +935,7 @@ chrome.runtime.onStartup.addListener(() => { runJob(); sweepBoard(false); }); //
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target === 'offscreen' || !Safety.ownPage(sender)) return;
-  const allowed = ['START','STOP','SKIP_JOB','BACKUP_EXPORT','BACKUP_IMPORT','ENQUEUE','HALT_ALL','HALT_COLLECT','HALT_POST','RESUME_ALL','RESUME_COLLECT','RESUME_POST','STATUS','LIST','GET','MARK_EXPORTED','WATCH','CHECK_NOW','SCAN','SET','SWEEP_NOW','GET_SWEEP','FLUSH_EXPORTS','ALERTS_LIST','ALERTS_READ','ALERTS_CLEAR','GET_SETTINGS','IMAGES','FIND_UID'];
+  const allowed = ['START','STOP','SKIP_JOB','BACKUP_EXPORT','BACKUP_IMPORT','DATA_STATUS','DATA_REBUILD','ENQUEUE','HALT_ALL','HALT_COLLECT','HALT_POST','RESUME_ALL','RESUME_COLLECT','RESUME_POST','STATUS','LIST','GET','MARK_EXPORTED','WATCH','CHECK_NOW','SCAN','SET','SWEEP_NOW','GET_SWEEP','FLUSH_EXPORTS','ALERTS_LIST','ALERTS_READ','ALERTS_CLEAR','GET_SETTINGS','IMAGES','FIND_UID'];
   if (!allowed.includes(msg.type)) return;
   Safety.serial('collect-command', async () => {
     await Safety.ready;
@@ -894,6 +978,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await setBadge();
       runJob();
       sendResponse({ ok: true });
+    } else if (msg.type === 'DATA_STATUS') {
+      let folder = { exists: false };
+      if (await get('useFolder', false)) { await ensureOffscreen(); folder = (await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_STATUS' })) || { ok: false }; }
+      sendResponse({ ok: true, useFolder: await get('useFolder', false), folder, rebuild: await get('archiveDataRebuild', null), lastError: await get('archiveDataError', null) });
+    } else if (msg.type === 'DATA_REBUILD') {
+      if (!(await get('useFolder', false))) throw new Error('先在设置里选择存档文件夹');
+      if (dataRebuilding) throw new Error('机读数据正在重建中');
+      rebuildArchiveData().catch(() => {});
+      sendResponse({ ok: true, started: true });
     } else if (msg.type === 'BACKUP_EXPORT') {
       sendResponse({ ok: true, data: await exportBackup() });
     } else if (msg.type === 'BACKUP_IMPORT') {
@@ -905,6 +998,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const rec = (await get(key(job.tid), null)) || { floors: [], thread: { tid: job.tid, fid: job.fid, title: job.title } };
       rec.failReason = (job.state === 'error' && job.error ? job.error : '') + '（手动跳过）'; rec.failedAt = Date.now();
       await set(key(job.tid), rec);
+      reportFailure(job, rec.failReason);
       await Safety.update('job', j => j?.id === job.id ? { ...j, state: 'done', error: '', skipped: rec.failReason, finishedAt: Date.now() } : j, null);
       await setBadge();
       runJob().catch(e => Safety.event('collect_error', { error: e.message }));

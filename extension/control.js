@@ -4,7 +4,7 @@ const Control = (() => {
     await Safety.ready;
     const keys = ['safety380','haltCollect','haltPost','humanChallenge','job','queue','postQueue','automationLog'];
     const s = await chrome.storage.local.get(keys);
-    return { ok:true, build:'4.2.5', profileId:s.safety380.profileId, haltCollect:!!s.haltCollect,haltPost:!!s.haltPost,
+    return { ok:true, build:'4.3.2', profileId:s.safety380.profileId, haltCollect:!!s.haltCollect,haltPost:!!s.haltPost,
       challenge:s.humanChallenge || null, job:s.job || null, queued:s.queue?.length || 0,
       posts:(s.postQueue || []).map(x=>({id:x.id,status:x.status,kind:x.kind,tid:x.tid,subject:x.subject,error:x.error,tabId:x.tabId})),
       log:(s.automationLog || []).slice(-40) };

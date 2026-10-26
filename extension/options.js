@@ -95,3 +95,29 @@ document.getElementById('bkFile').onchange = async (e) => {
   bkMsg.textContent = `已导入：队列新增 ${r.added} 个（现在共 ${r.queued} 个），自动跟进 ${r.watched} 个，跳过记录 ${r.skipped} 个，定时发帖 ${r.posts} 条（暂缓），设置 ${r.settings} 项。\n采集目前暂停，在插件面板点「▶ 恢复采集」开始。`;
   show(); showSweep();
 };
+
+// 4.3.0：机读存档状态与重建
+const dataMsg = document.getElementById('dataMsg');
+async function showData() {
+  const r = await chrome.runtime.sendMessage({ type: 'DATA_STATUS' });
+  if (!r || !r.ok) { dataMsg.textContent = '读不到状态：' + ((r && r.error) || ''); return; }
+  if (!r.useFolder) { dataMsg.textContent = '还没选存档文件夹。机读存档只在选了文件夹时生成。'; return; }
+  const f = r.folder || {}, b = r.rebuild;
+  const L = [];
+  if (f.needPermission) L.push('存档文件夹需要重新授权（点插件面板的「存档位置」）。');
+  else if (!f.exists) L.push('还没有机读数据。点「从现有存档重建」生成。');
+  else L.push(`已收录 ${f.threads} 个帖子，发布序号 ${f.seq}，第 ${f.generation} 代，覆盖：${f.coverage === 'full' ? '全部' : '部分（建议重建一次）'}。`);
+  if (b && b.running) L.push(`正在重建：已处理 ${b.processed}${b.total ? ' / ' + b.total : ''} 个文件…`);
+  else if (b && b.error) L.push('上次重建失败：' + b.error);
+  else if (b && b.doneAt) L.push('上次重建完成：' + new Date(b.doneAt).toLocaleString());
+  if (r.lastError) L.push('最近一次机读数据写入失败：' + r.lastError.error);
+  dataMsg.textContent = L.join('\n');
+  if (b && b.running) setTimeout(showData, 3000);
+}
+document.getElementById('dataRefresh').onclick = showData;
+document.getElementById('dataRebuild').onclick = async () => {
+  const r = await chrome.runtime.sendMessage({ type: 'DATA_REBUILD' });
+  if (!r || !r.ok) { dataMsg.textContent = '没能开始：' + ((r && r.error) || ''); return; }
+  dataMsg.textContent = '已开始重建…'; setTimeout(showData, 1500);
+};
+showData();

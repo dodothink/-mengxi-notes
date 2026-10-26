@@ -39,10 +39,18 @@
   }
 
   async function writeText(dir, name, text) {
-    const fh = await dir.getFileHandle(name, { create: true });
-    const w = await fh.createWritable(); // Chrome 先写临时文件，close 时整体替换，不会出现写了一半的文件
-    await w.write(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
-    await w.close();
+    let last;
+    for (let i = 0; i < 6; i++) { // 4.3.1：文件系统一时忙（InvalidStateError 等）时等一会儿重试
+      const fh = await dir.getFileHandle(name, { create: true });
+      const w = await fh.createWritable(); // Chrome 先写临时文件，close 时整体替换，不会出现写了一半的文件
+      try { await w.write(new Blob([text], { type: 'text/markdown;charset=utf-8' })); await w.close(); return; }
+      catch (e) {
+        last = e; try { await w.abort(); } catch (x) { /* 已关闭 */ }
+        if (!/InvalidState|NoModificationAllowed|state of the underlying|could not be modified/i.test(String(e && (e.name + ' ' + e.message)))) throw e;
+        await new Promise((r) => setTimeout(r, 300 * 2 ** i));
+      }
+    }
+    throw last;
   }
 
   // 把被合并掉的文件移进 _重复备份/：优先 move()；不支持时先复制一份到备份里，确认写好了再移除原文件
@@ -61,7 +69,7 @@
     return target;
   }
 
-  async function writeMerged(dir, { tid, fileName, markdown }) {
+  async function writeMerged(dir, { tid, fileName, markdown, capture, floorSeqs }) {
     tid = String(tid || '');
     const A = M();
     if (!/^\d+$/.test(tid)) throw new Error('帖子编号无效');
@@ -100,7 +108,13 @@
       await writeText(dir, fileName, merged.text);
       const moved = [];
       for (const n of names) if (n !== fileName) { await backup(dir, n); moved.push(n); }
-      return { ok: true, fileName, floors: merged.floors, edited: merged.edited, mergedFrom: names.length, moved };
+      // 4.3.0：Markdown 写好之后，再发布机读数据（逐帖 JSON → 日志 → 清单）。机读部分失败不影响 Markdown，但会报给调用方。
+      let data = null, dataError = null;
+      if (root.ArchiveData) {
+        try { data = await root.ArchiveData.publish(dir, { tid, fileName, mdText: merged.text, capture, floorSeqs }); }
+        catch (e) { dataError = String(e.message || e); }
+      }
+      return { ok: true, fileName, floors: merged.floors, edited: merged.edited, mergedFrom: names.length, moved, data, dataError };
     }
     throw new Error('存档文件一直在被其他程序修改，稍后再试');
   }

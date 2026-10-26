@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "My0511 帖子存档 · 纯插件版",
-  "version": "4.2.5",
+  "version": "4.3.2",
   "description": "梦溪论坛文字存档与定时发帖。存档按帖子编号合并写入同一文件夹，不需要本地服务。",
   "default_locale": "zh_CN",
   "permissions": [
@@ -38,5 +38,5 @@
     }
   },
   "options_page": "options.html",
-  "version_name": "4.2.5"
+  "version_name": "4.3.2"
 }

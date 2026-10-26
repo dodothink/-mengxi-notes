@@ -13,6 +13,7 @@
   h2 { font-size: 14px; margin: 0 0 8px; }
   p { margin: 0 0 12px; }
   .dim { color: var(--dim); }
+  #dataMsg, #bkMsg { white-space: pre-wrap; }
   button { padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer;
     border: 1px solid var(--blue); background: var(--blue); color: #fff; border-radius: 3px; }
   button.ghost { background: #fff; color: var(--ink); border-color: var(--line); }
@@ -51,6 +52,15 @@ button[data-toggle]{border-radius:9px;padding:8px 12px;background:#f2f6f3;color:
     <p class="dim">选一个文件夹后，导出的帖子和索引都直接写进去，重复导出会覆盖同名文件。不选的话，文件会存到「下载 / My0511存档」。换电脑或换浏览器要各选一次。</p>
     <p><button id="pick">选择文件夹</button> <button id="clear" class="ghost">改回下载文件夹</button></p>
     <p id="msg" class="dim"></p>
+  </section>
+
+  <section>
+    <h2>机读存档（给本地阅读程序用）</h2>
+    <p class="dim">在存档文件夹里另存一份机器读的数据（<code>_data/</code>）：逐帖 JSON、版本化清单和变更日志。Markdown 照旧，不受影响。
+    全自动维护：每存一个帖子立即更新；没收录全（第一次启用、换了文件夹）或上次中断时，插件会在空闲时自动在后台补齐，不用管。
+    想马上补齐或觉得对不上时，也可以手动点「从现有存档重建」。</p>
+    <p><button id="dataRebuild">从现有存档重建</button> <button id="dataRefresh" class="ghost">刷新状态</button></p>
+    <p id="dataMsg" class="dim"></p>
   </section>
 
   <section>

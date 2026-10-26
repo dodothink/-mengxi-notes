@@ -18,12 +18,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // 4.0：后台自动写存档。offscreen 是页面环境，能用已授权的文件夹句柄；没授权时不弹窗，只回报。
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || msg.target !== 'offscreen' || !['ARCHIVE_WRITE', 'ARCHIVE_INDEX', 'ARCHIVE_KNOWN', 'ARCHIVE_BINARY', 'ARCHIVE_STATUS'].includes(msg.type)) return;
+  if (!msg || msg.target !== 'offscreen' || !['ARCHIVE_WRITE', 'ARCHIVE_INDEX', 'ARCHIVE_KNOWN', 'ARCHIVE_BINARY', 'ARCHIVE_STATUS', 'ARCHIVE_DATA_FAIL', 'ARCHIVE_DATA_REBUILD', 'ARCHIVE_DATA_STATUS'].includes(msg.type)) return;
   (async () => {
     if (msg.type === 'ARCHIVE_STATUS') { const s = await self.FS.handleState(); return { ok: true, has: !!s.has, name: s.name || null, perm: s.perm || null }; }
     const f = await self.ArchiveFolder.folder(false);
     if (!f.ok) return f;
     if (msg.type === 'ARCHIVE_WRITE') return self.ArchiveFolder.writeMerged(f.dir, msg);
+    if (msg.type === 'ARCHIVE_DATA_FAIL') return { ok: true, ...(await self.ArchiveData.recordFailure(f.dir, msg)) };
+    if (msg.type === 'ARCHIVE_DATA_REBUILD') return { ok: true, ...(await self.ArchiveData.rebuildBatch(f.dir, msg)) };
+    if (msg.type === 'ARCHIVE_DATA_STATUS') return self.ArchiveData.status(f.dir);
     if (msg.type === 'ARCHIVE_BINARY') { const bin = atob(msg.b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return self.ArchiveFolder.writeBinary(f.dir, msg.path, bytes); }
     if (msg.type === 'ARCHIVE_KNOWN') return { ok: true, known: await self.ArchiveFolder.knownFloors(f.dir, msg.tids) };
     return { ok: true, count: await self.ArchiveFolder.buildIndex(f.dir, msg.watch) };

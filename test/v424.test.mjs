@@ -35,3 +35,34 @@ test('sweep interval is a configurable random range: each next time falls inside
  w.data.sweepNextAt=Date.now()-1;assert.equal(await w.eval('sweepDue()'),true);
  const g=await call(w,{type:'GET_SWEEP'});assert.equal(g.sweepRange.max,240);assert.ok(g.sweepNextAt);
 });
+test('4.3 capture summary: full vs incremental, pages read, failure keeps reason',async()=>{
+ const w=boot();await w.eval('Safety.ready');
+ const full=await w.eval("captureOf({auto:true,startPage:1,lastPage:3,page:4,toEnd:true,startedAt:1},true)");
+ assert.equal(full.complete,true);assert.equal(full.scope,'full');assert.equal(full.pagesRead.join(),'1,3');
+ const inc=await w.eval("captureOf({startPage:3,lastPage:5,page:6,toEnd:true},true)");assert.equal(inc.complete,false);assert.equal(inc.scope,'incremental');assert.equal(inc.pagesRead.join(),'3,5');
+ const bad=await w.eval("captureOf({startPage:1,lastPage:4,page:3,toEnd:true},false,'断网')");assert.equal(bad.ok,false);assert.equal(bad.complete,false);assert.equal(bad.pagesRead.join(),'1,2');assert.equal(bad.reason,'断网');
+ const none=await w.eval("captureOf({startPage:1,lastPage:1,page:1},false,'x')");assert.equal(none.pagesRead.length,0);
+});
+test('4.3.1: machine-readable archive maintains itself — an incomplete index is rebuilt automatically when idle, at most every 10 minutes',async()=>{
+ const w=boot({useFolder:true});await w.eval('Safety.ready');
+ w.chrome.offscreen={hasDocument:async()=>true,createDocument:async()=>{}};
+ const calls=[];w.chrome.runtime.sendMessage=async m=>{calls.push(m.type);if(m.type==='ARCHIVE_DATA_STATUS')return {ok:true,exists:true,coverage:'partial'};if(m.type==='ARCHIVE_DATA_REBUILD')return {ok:true,done:true,processed:3,total:3,next:'x',seq:9,sourceId:'s'};return {ok:true};};
+ await w.eval('maybeAutoRebuild()');for(let i=0;i<50;i++)await new Promise(r=>setImmediate(r));
+ assert.ok(calls.includes('ARCHIVE_DATA_REBUILD'));assert.equal(w.data.archiveDataRebuild.running,false);assert.ok(w.data.archiveDataRebuild.doneAt);
+ const n=calls.length;await w.eval('maybeAutoRebuild()');assert.equal(calls.length,n,'throttled');
+ w.data.archiveDataAutoCheck=0;w.chrome.runtime.sendMessage=async m=>{calls.push(m.type);return m.type==='ARCHIVE_DATA_STATUS'?{ok:true,exists:true,coverage:'full'}:{ok:true};};
+ await w.eval('maybeAutoRebuild()');for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(calls.filter(x=>x==='ARCHIVE_DATA_REBUILD').length,1,'full coverage needs no rebuild');
+});
+test('4.3.2: maintenance is linked to collection — a thread write that reports partial coverage starts the rebuild at once, even while collecting',async()=>{
+ const w=boot({useFolder:true});await w.eval('Safety.ready');
+ w.chrome.offscreen={hasDocument:async()=>true,createDocument:async()=>{}};
+ const calls=[];w.chrome.runtime.sendMessage=async m=>{calls.push(m.type);if(m.type==='ARCHIVE_DATA_REBUILD')return {ok:true,done:true,processed:1,total:1,next:'x',seq:5,sourceId:'s'};return {ok:true};};
+ w.eval('running=true');w.data.archiveDataAutoCheck=Date.now(); // 正在采集、刚检查过
+ await w.eval("noteDataResult({ok:true,data:{sourceId:'s',seq:4,coverage:'partial',rebuilding:false}})");
+ for(let i=0;i<50;i++)await new Promise(r=>setImmediate(r));
+ assert.ok(calls.includes('ARCHIVE_DATA_REBUILD'));
+ const n=calls.length;await w.eval("noteDataResult({ok:true,data:{sourceId:'s',seq:6,coverage:'full',rebuilding:false}})");
+ for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));assert.equal(calls.length,n,'full coverage: nothing to do');
+ w.eval('running=false');
+});

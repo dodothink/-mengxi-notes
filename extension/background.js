@@ -19,7 +19,10 @@ const ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 冷却 5 分钟后自动恢复
 const DEFAULT_SWEEP_FID = '152'; // 百姓话题板块
 const DEFAULT_SWEEP_PAGES = 2;
 const SWEEP_MINUTES = 15;
-const FAIL_RETRY_MS = 24 * 60 * 60 * 1000; // 帖子被判「没权限」后，一天内巡查不会再自动重新排它
+const FAIL_RETRY_MS = 24 * 60 * 60 * 1000;
+// 4.4.0：被跳过的帖子按连续失败次数加倍冷却（1、2、4、8 天，最长 14 天），巡查期间不再反复重排
+const failCooldownMs = (rec) => Math.min(14 * 86400000, FAIL_RETRY_MS * 2 ** Math.max(0, (rec.failStreak || 1) - 1));
+const inFailCooldown = (rec) => !!(rec && rec.failReason && Date.now() - (rec.failedAt || 0) < failCooldownMs(rec)); // 帖子被判「没权限」后，一天内巡查不会再自动重新排它
 let running = false;   // 正在逐页采集/跟进
 let sweeping = false;  // 正在巡查板块列表
 
@@ -165,7 +168,7 @@ async function mergeIntoStore(tid, meta, floors, url, fid) {
   const merged = await Safety.update(key(tid), async existing => {
   const rec = existing || { floors: [], thread: {} };
   rec.thread = Object.assign({}, rec.thread, meta, { tid, fid, url });
-  delete rec.failReason; // 这次成功读到了，之前记的「没权限/需要登录」跳过原因就作废了
+  delete rec.failStreak; delete rec.failReason; // 这次成功读到了，之前记的「没权限/需要登录」跳过原因就作废了
   delete rec.failedAt;
   const by = new Map(rec.floors.map((f) => [f.floor != null ? 'n' + f.floor : 'p' + f.pid, f]));
   // 3.5.0：楼层内容变了不再直接覆盖——旧内容连同采集时间存进 history，一个版本都不丢。
@@ -387,13 +390,14 @@ async function reportFailure(job, reason) {
     if (!(await get('useFolder', false))) return;
     await ensureOffscreen();
     const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_FAIL', tid: String(job.tid), fid: job.fid ? String(job.fid) : null,
-      reason, capture: captureOf(job, false, reason), floorSeqs: await get('archiveDataSeq', {}) });
+      reason, capture: captureOf(job, false, reason), floorSeqs: await get('archiveDataSeq', {}), instanceId: ((await get('safety380', {})) || {}).profileId });
     if (r && r.ok) await noteDataSeq(r);
   } catch (e) { /* 机读清单记不上不影响采集 */ }
 }
 // 从文件夹现有 Markdown 分批重建机读数据（首次启用 4.3 或怀疑不一致时，在设置页手动触发）
 let dataRebuilding = false;
 async function rebuildArchiveData() {
+  if (dataRebuilding) return; // 4.4.1：防重入——以前每写一个帖子都可能再启动一条重建，多条交错互相换代、清空断点
   dataRebuilding = true;
   let after = '', processed = 0;
   try {
@@ -402,7 +406,7 @@ async function rebuildArchiveData() {
       await ensureOffscreen();
       let r, tries = 0;
       for (;;) { // 4.3.1：一批失败先等几秒重试 3 次；重建本身可断点续做
-        r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_REBUILD', after, limit: 150, floorSeqs: await get('archiveDataSeq', {}) });
+        r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_REBUILD', after, limit: 150, floorSeqs: await get('archiveDataSeq', {}), instanceId: ((await get('safety380', {})) || {}).profileId });
         if (r && r.ok) break;
         if (r && r.needPermission) throw new Error('存档文件夹需要重新授权');
         if (++tries >= 3) throw new Error((r && r.error) || '重建失败');
@@ -422,7 +426,7 @@ async function folderWrite(rec, capture) {
   const fileName = MD.fileNameFor(rec.thread, rec.floors);
   await ensureOffscreen();
   const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_WRITE', tid: String(rec.thread.tid), fileName, markdown: md,
-    capture: capture || { known: false }, floorSeqs: await get('archiveDataSeq', {}) });
+    capture: capture || { known: false }, floorSeqs: await get('archiveDataSeq', {}), instanceId: ((await get('safety380', {})) || {}).profileId });
   if (r && r.ok) await noteDataResult(r);
   if (!r || !r.ok) {
     const e = new Error((r && r.error) || (r && r.needPermission ? '存档文件夹需要重新授权' : '写入失败'));
@@ -461,6 +465,7 @@ async function autoExport(rec, capture) {
     });
   }
   await Safety.update(key(rec.thread.tid), current => ({ ...current, thread:{...current.thread,fileName}, exportedAt:Date.now(),newFloors:0 }), rec);
+  await set('lastCaptureAt', Date.now());
   await writeIndex();
   return fileName;
 }
@@ -514,7 +519,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
 // ===== 4.2.3：导出 / 导入队列和设置（换电脑、清浏览器都不怕）=====
 // 只导出「状态」：待采队列、当前未完成的帖子、定时发帖队列和规则、各项设置、自动跟进名单、跳过记录。
 // 帖子正文不在里面——正文已经在存档文件夹的 Markdown 里，新电脑选同一个文件夹就能接着用。
-const BACKUP_SETTING_KEYS = ['sweepEnabled','sweepPages','sweepRange','sweepFid','watchEnabled','useFolder','foldFiller','myName','watchUsers','keywords','imageUsers','postCfg'];
+const BACKUP_SETTING_KEYS = ['sweepEnabled','sweepPages','sweepRange','watchdog','sweepFid','watchEnabled','useFolder','foldFiller','myName','watchUsers','keywords','imageUsers','postCfg'];
 async function exportBackup() {
   const all = await chrome.storage.local.get(null);
   const settings = {};
@@ -679,7 +684,7 @@ async function runJob() {
               // 就算是全新、一次都没采成功过的帖子（还没有存档记录），也要留一条「跳过」记录，
               // 不然巡查那边找不到 failReason，下一轮又会把它当新帖子重新排进队列
               const rec = (await get(key(cur.tid), null)) || { floors: [], thread: { tid: cur.tid, fid: cur.fid } };
-              rec.failReason = e.message; rec.failedAt = Date.now();
+              rec.failReason = e.message; rec.failedAt = Date.now(); rec.failStreak = (rec.failStreak || 0) + 1;
               await set(key(cur.tid), rec);
               reportFailure(cur, rec.failReason);
               cur.state = 'done'; cur.error = ''; cur.finishedAt = Date.now(); cur.skipped = e.message;
@@ -697,7 +702,7 @@ async function runJob() {
             break;
           }
           const rec = (await get(key(cur.tid), null)) || { floors: [], thread: { tid: cur.tid, fid: cur.fid } };
-          rec.failReason = e.message; rec.failedAt = Date.now();
+          rec.failReason = e.message; rec.failedAt = Date.now(); rec.failStreak = (rec.failStreak || 0) + 1;
           await set(key(cur.tid), rec);
           reportFailure(cur, rec.failReason);
           cur.state = 'done'; cur.error = ''; cur.finishedAt = Date.now(); cur.skipped = e.message;
@@ -714,7 +719,7 @@ async function runJob() {
         if (!transient) cur.failCount = (cur.failCount || 0) + 1;
         if (!transient && cur.failCount >= 3) {
           const rec = (await get(key(cur.tid), null)) || { floors: [], thread: { tid: cur.tid, fid: cur.fid } };
-          rec.failReason = String(e.message || e) + '（连续 3 次失败，已跳过）'; rec.failedAt = Date.now();
+          rec.failReason = String(e.message || e) + '（连续 3 次失败，已跳过）'; rec.failedAt = Date.now(); rec.failStreak = (rec.failStreak || 0) + 1;
           await set(key(cur.tid), rec);
           reportFailure(cur, rec.failReason);
           cur.state = 'done'; cur.error = ''; cur.finishedAt = Date.now(); cur.skipped = rec.failReason;
@@ -823,6 +828,7 @@ async function sweepBoard(manual) {
       if (busy.has(row.tid)) continue;
       const rec = await get(key(row.tid), null);
       const fk = fileKnown[row.tid] || 0;
+      if (inFailCooldown(rec)) continue; // 4.4.0：最近被跳过的帖子（没权限、打不开）冷却期内不再排队
       if ((!rec || !rec.floors.length) && fk) {
         // 浏览器里没记录、但文件夹里已有存档：从文件存到的那页接着采
         if (row.replies + 1 > fk) {
@@ -857,6 +863,7 @@ async function sweepBoard(manual) {
       at: Date.now(), scanned: rows.size, pages, newThreads, updatedThreads, newReplies, error: fetchError,
     };
     await set('lastSweep', summary);
+    if (!fetchError && rows.size) await set('lastSweepOkAt', summary.at);
     await pickNextSweep(summary.at); // 下次巡查时间：在设置的范围里随机
     // Queue starts after releasing the sweep lock.
     return { ok: true, ...summary };
@@ -908,8 +915,11 @@ async function sweepDue() {
 async function maybeAutoRebuild(knownIncomplete = false) {
   if (dataRebuilding) return;
   if (!(await get('useFolder', false)) || (await get('folderAuthNeeded', false))) return;
+  // 4.4.1：刚完整跑完一次重建、仍有个别文件收录不了（比如文件损坏）时，6 小时内不再自动重跑，避免每写一帖就全量扫一遍
+  const lastRb = await get('archiveDataRebuild', null);
+  const recentlyDone = lastRb && lastRb.doneAt && Date.now() - lastRb.doneAt < 6 * 3600000;
   // 读帖刚写完、已知没收录全：直接开始（重建和采集写入由文件锁串行，互不打架）
-  if (knownIncomplete) { rebuildArchiveData().catch(() => {}); return; }
+  if (knownIncomplete) { if (!recentlyDone) rebuildArchiveData().catch(() => {}); return; }
   if (running || sweeping) return;
   const last = await get('archiveDataAutoCheck', 0);
   if (Date.now() - last < 10 * 60000) return;
@@ -918,10 +928,85 @@ async function maybeAutoRebuild(knownIncomplete = false) {
     await ensureOffscreen();
     const st = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ARCHIVE_DATA_STATUS' });
     if (!st || !st.ok) return;
-    if (!st.exists || st.coverage !== 'full' || st.rebuilding) rebuildArchiveData().catch(() => {});
+    // 4.4.0：清单说「全部」，但收录的帖子明显少于文件夹里的 Markdown（比如被另一个浏览器覆盖过），也自动补齐
+    const short = st.mdCount != null && st.withMd != null && st.mdCount - st.withMd > Math.max(5, st.mdCount * 0.01);
+    const shortOk = short && Date.now() - (await get('archiveDataShortRebuildAt441', 0)) > 24 * 3600000; // 补齐对不上的情况一天最多一次
+    if (shortOk) await set('archiveDataShortRebuildAt441', Date.now());
+    if (st.rebuilding || !st.exists || shortOk || (st.coverage !== 'full' && !recentlyDone)) rebuildArchiveData().catch(() => {});
   } catch (e) { /* 下次再看 */ }
 }
+// ===== 4.4.0：停机看护 =====
+// 采集因为论坛验证、要求登录而暂停，或者长时间没有新存档时，弹系统通知提醒；
+// 验证类暂停冷却后每次只试读一页版块列表，论坛正常了就自动恢复（不答题、不换身份）。
+const WATCHDOG_DEFAULT = { notify: true, remindMin: 120, staleHours: 6, autoResume: true };
+function cleanWatchdog(v) {
+  v = v && typeof v === 'object' ? v : {};
+  const num = (x, d, lo, hi) => { x = Math.round(Number(x)); return Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : d; };
+  return { notify: v.notify !== false, autoResume: v.autoResume !== false,
+    remindMin: num(v.remindMin, 120, 30, 1440), staleHours: num(v.staleHours, 6, 1, 72) };
+}
+async function wdNotify(id, title, message) {
+  try { await chrome.notifications.create('wd:' + id, { type: 'basic', iconUrl: 'icons/icon128.png', title, message, priority: 2 }); } catch (e) { /* 通知被系统关了也不影响采集 */ }
+}
+let wdBusy = false;
+async function watchdogTick() {
+  if (wdBusy) return; wdBusy = true;
+  try {
+    const cfg = cleanWatchdog(await get('watchdog', WATCHDOG_DEFAULT));
+    const st = await get('watchdogState', {});
+    const now = Date.now();
+    const ch = await get('humanChallenge', null);
+    if (ch) {
+      const kindText = ch.kind === 'login' ? '论坛要求重新登录' : '论坛弹出了验证';
+      if (st.challengeId !== ch.id) { // 新的一次暂停
+        Object.assign(st, { challengeId: ch.id, attempts: 0, nextProbe: (ch.createdAt || now) + 30 * 60000, lastRemind: 0 });
+      }
+      if (cfg.notify && now - (st.lastRemind || 0) >= (st.lastRemind ? cfg.remindMin * 60000 : 0)) {
+        const mins = Math.round((now - (ch.createdAt || now)) / 60000);
+        const how = ch.kind === 'login' ? '请在浏览器里登录梦溪论坛，再点插件面板的「▶ 恢复采集」。'
+          : (cfg.autoResume ? `插件会过一阵自动试一次，正常了就自己恢复；也可以在浏览器打开论坛做完验证，再点「▶ 恢复采集」。` : '请在浏览器打开论坛做完验证，再点插件面板的「▶ 恢复采集」。');
+        await wdNotify('challenge', `My0511 采集已暂停：${kindText}`, (mins >= 5 ? `已经停了 ${mins >= 120 ? Math.round(mins / 60) + ' 小时' : mins + ' 分钟'}。` : '') + how);
+        st.lastRemind = now;
+      }
+      if (cfg.autoResume && ch.kind !== 'login' && now >= (st.nextProbe || 0) && !running && !sweeping) {
+        try {
+          await clearChallengeIfForumOk();
+          await Safety.event('challenge_auto_cleared', { challengeId: ch.id, attempts: st.attempts });
+          if (cfg.notify) await wdNotify('resumed', 'My0511 采集已自动恢复', `论坛已能正常读取（暂停约 ${Math.round((now - (ch.createdAt || now)) / 60000)} 分钟），队列接着采。`);
+          Object.assign(st, { challengeId: null, attempts: 0, nextProbe: 0, lastRemind: 0 });
+          runJob().catch(() => {});
+        } catch (e) {
+          st.attempts = (st.attempts || 0) + 1;
+          st.nextProbe = now + Math.min(240, 30 * 2 ** st.attempts) * 60000; // 1、2、4 小时，最长 4 小时一次
+          st.lastProbeError = String(e.message || e).slice(0, 200);
+        }
+      }
+    } else if (st.challengeId) {
+      Object.assign(st, { challengeId: null, attempts: 0, nextProbe: 0, lastRemind: 0 });
+    }
+    // 兜底：巡查开着、没有被人为暂停，却很久没有任何新存档或成功巡查
+    const userHalted = await get('haltCollect', false);
+    if (cfg.notify && !ch && !userHalted && (await get('sweepEnabled', false))) {
+      const lastOk = Math.max(await get('lastCaptureAt', 0), (await get('lastSweepOkAt', 0)));
+      const since = await get('watchdogSince', now); if (!(await get('watchdogSince', 0))) await set('watchdogSince', now);
+      const ref = lastOk || since;
+      if (now - ref >= cfg.staleHours * 3600000 && now - (st.lastStale || 0) >= cfg.staleHours * 3600000) {
+        await wdNotify('stale', 'My0511 好久没有新存档了', `已经 ${Math.round((now - ref) / 3600000)} 小时没有成功巡查或存下新帖子。请打开插件面板看看状态（电脑睡眠、Edge 被关、网络或论坛问题都可能）。`);
+        st.lastStale = now;
+      }
+    }
+    await set('watchdogState', st);
+  } finally { wdBusy = false; }
+}
+chrome.notifications?.onClicked?.addListener((nid) => {
+  if (!String(nid).startsWith('wd:')) return;
+  chrome.notifications.clear(nid);
+  if (nid === 'wd:challenge') get('humanChallenge', null).then((c) => chrome.tabs.create({ url: (c && c.url && /^https:\/\/bbs\.my0511\.com\//.test(c.url)) ? c.url : BASE + '/f152b' })).catch(() => {});
+  else chrome.runtime.openOptionsPage();
+});
+
 async function onTick() {
+  watchdogTick().catch(() => {});
   maybeAutoRebuild().catch(() => {});
   if (!running && !sweeping && (await sweepDue())) return sweepBoard(false);
   return runJob();
@@ -996,7 +1081,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const job = await get('job', null);
       if (!job || !['error','running','waiting_human'].includes(job.state)) { sendResponse({ ok: false, error: '当前没有正在采或卡住的帖子。' }); return; }
       const rec = (await get(key(job.tid), null)) || { floors: [], thread: { tid: job.tid, fid: job.fid, title: job.title } };
-      rec.failReason = (job.state === 'error' && job.error ? job.error : '') + '（手动跳过）'; rec.failedAt = Date.now();
+      rec.failReason = (job.state === 'error' && job.error ? job.error : '') + '（手动跳过）'; rec.failedAt = Date.now(); rec.failStreak = (rec.failStreak || 0) + 1;
       await set(key(job.tid), rec);
       reportFailure(job, rec.failReason);
       await Safety.update('job', j => j?.id === job.id ? { ...j, state: 'done', error: '', skipped: rec.failReason, finishedAt: Date.now() } : j, null);
@@ -1017,7 +1102,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true, job: await get('job', null), queue: fullQueue.slice(0, 20), queueCount: fullQueue.length,
         rec: msg.tid ? await get(key(msg.tid), null) : null, active: running || sweeping, sweeping,
         halted: await isHalted(), haltCollect: await isHalted(), haltPost: await get('haltPost', false),
-        challenge: await get('humanChallenge', null) });
+        challenge: await get('humanChallenge', null), watchdogNext: (await get('watchdogState', {})).nextProbe || null });
     } else if (msg.type === 'LIST') {
       const all = await chrome.storage.local.get(null);
       sendResponse({ ok: true, list: Object.keys(all).filter((k) => k.startsWith('t:')).map((k) => ({
@@ -1057,9 +1142,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const q = await enqueueThreads(msg.threads);
       sendResponse({ ok: true, size: q.length });
     } else if (msg.type === 'SET') {
-      if (!['watchEnabled','sweepEnabled','sweepPages','sweepRange','useFolder','foldFiller','myName','watchUsers','keywords','imageUsers'].includes(msg.key)) throw new Error('不允许写入此设置');
+      if (!['watchEnabled','sweepEnabled','sweepPages','sweepRange','watchdog','useFolder','foldFiller','myName','watchUsers','keywords','imageUsers'].includes(msg.key)) throw new Error('不允许写入此设置');
       if (msg.key === 'sweepPages') msg.value = Math.max(1, Math.min(10, Number(msg.value) || 2));
       else if (msg.key === 'sweepRange') msg.value = cleanRange(msg.value);
+      else if (msg.key === 'watchdog') msg.value = cleanWatchdog(msg.value);
       else if (msg.key === 'myName') { msg.value = String(msg.value || '').trim(); if (msg.value.length > 40) throw new Error('ID 太长'); }
       else if (['watchUsers','keywords','imageUsers'].includes(msg.key)) {
         if (!Array.isArray(msg.value)) throw new Error('设置值无效');
@@ -1104,6 +1190,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sweepPages: await get('sweepPages', DEFAULT_SWEEP_PAGES),
         sweepFid: await get('sweepFid', DEFAULT_SWEEP_FID),
         sweepRange: cleanRange(await get('sweepRange', DEFAULT_SWEEP_RANGE)), sweepNextAt: await get('sweepNextAt', null),
+        watchdog: cleanWatchdog(await get('watchdog', WATCHDOG_DEFAULT)), watchdogState: await get('watchdogState', {}),
       });
     }
   }).catch(e => sendResponse({ ok: false, error: String(e.message || e) }));

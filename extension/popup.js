@@ -38,6 +38,7 @@ async function refresh() {
   const notes = [];
   const ch = r && r.challenge;
   if (ch) notes.push(ch.kind === 'login' ? '论坛要求登录：在浏览器里登录梦溪论坛后，点「▶ 恢复采集」。' : '论坛弹出了验证（算术题）：在浏览器里打开梦溪论坛做完验证后，点「▶ 恢复采集」，插件会先确认论坛正常再继续。');
+  if (ch && ch.kind !== 'login' && r.watchdogNext) notes.push(`插件会在 ${fmtTime(r.watchdogNext)} 左右自动试读一次，正常了就自己恢复。`);
   else if (hc) notes.push('采集已暂停，队列会保留。');
   if (hp) notes.push('发帖已暂停。');
   if (qn && !busy) notes.push(`队列里有 ${qn} 个帖子待采。`);

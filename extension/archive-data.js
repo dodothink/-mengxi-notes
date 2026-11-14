@@ -24,6 +24,37 @@
   async function readJson(dir, name) {
     try { return JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text()); } catch (e) { return null; }
   }
+  // 4.4.1：关键文件（来源标识、清单）严格读取。以前任何读取错误都当成「文件不存在」，一次瞬时读错就会新建空清单、
+  // 甚至换掉来源标识（11-02、11-14 清单丢条目、代数倒退的根因）。现在只有确实不存在才算 missing；
+  // 读不出来就重试，仍失败就报错、不写；内容确实坏了才返回 corrupt。
+  const isNotFound = (e) => /NotFound/i.test(String(e && (e.name + ' ' + e.message)));
+  async function readJsonStrict(dir, name) {
+    let last, badText = null;
+    for (let i = 0; i < 6; i++) {
+      let text;
+      try { text = await (await (await dir.getFileHandle(name)).getFile()).text(); }
+      catch (e) { if (isNotFound(e)) return { state: 'missing' }; last = e; await new Promise((r) => setTimeout(r, 200 * 2 ** i)); continue; }
+      try { return { state: 'ok', value: JSON.parse(text) }; }
+      catch (e) { last = e; badText = text; await new Promise((r) => setTimeout(r, 200 * 2 ** i)); }
+    }
+    if (badText != null) return { state: 'corrupt', text: badText, error: String(last && last.message || last) };
+    const e = new Error('读不出 ' + name + '（' + String(last && (last.name + ': ' + last.message) || last) + '），本次不写机读数据，下次再试');
+    e.readFailed = true; throw e;
+  }
+  // 从日志目录本身恢复日志状态（清单坏了时用）：文件列表、每个文件的首尾序号、最后的代数
+  async function journalState(data) {
+    let jdir; try { jdir = await data.getDirectoryHandle(JOURNAL); } catch (e) { return { files: [], lastSeq: 0, lastGen: 0 }; }
+    const names = []; for await (const [n, h] of jdir.entries()) if (h.kind === 'file' && /^\d{6}\.jsonl$/.test(n)) names.push(n);
+    names.sort();
+    const files = []; let lastSeq = 0, lastGen = 0;
+    for (const n of names) {
+      const lines = (await (await (await jdir.getFileHandle(n)).getFile()).text()).trim().split('\n').filter(Boolean);
+      let first = null, lastL = null;
+      for (const l of lines) { try { const e = JSON.parse(l); if (first == null) first = e.seq; lastL = e; if (e.seq > lastSeq) lastSeq = e.seq; if (e.gen > lastGen) lastGen = e.gen; } catch (x) { /* 半行跳过 */ } }
+      files.push({ name: n, firstSeq: first || 1, lastSeq: lastL ? lastL.seq : first || 1 });
+    }
+    return { files, lastSeq, lastGen };
+  }
   // 4.3.1：macOS 上偶尔报「文件系统状态不允许修改」（InvalidStateError / NoModificationAllowedError），
   // 多半是同一文件上一笔写入的临时文件（.crswap）还没释放。等一会儿重试，不要整批失败。
   const transientFs = (e) => /InvalidState|NoModificationAllowed|state of the underlying|could not be modified|InUse/i.test(String((e && (e.name + ' ' + e.message)) || e));
@@ -53,9 +84,26 @@
     });
   }
 
+  // 4.4.0：同一个存档文件夹只能由一个浏览器里的插件写机读数据（不同浏览器之间文件锁不共享，
+  // 11 月 2 日就出现过两边同时写、清单互相覆盖丢条目）。写之前登记「写入方」，别人 3 分钟内写过就不写，报错提示。
+  const LEASE_MS = 3 * 60000;
+  async function claimWriter(data, instanceId) {
+    if (!instanceId) return;
+    const w = await readJson(data, 'writer.json');
+    const now = Date.now();
+    if (w && w.instanceId && w.instanceId !== instanceId && now - (w.at || 0) < LEASE_MS) {
+      const e = new Error('另一个浏览器里的插件也在写这个存档文件夹，为避免互相覆盖，本次没有更新机读数据。请只在一个浏览器里开采集。');
+      e.otherWriter = true; throw e;
+    }
+    await writeText(data, 'writer.json', JSON.stringify({ instanceId, at: now, note: '正在写机读数据的插件实例；3 分钟内有效' }));
+  }
+
   async function source(data) {
-    let s = await readJson(data, 'source.json');
-    if (!s || s.format !== FORMAT || !s.sourceId) {
+    const r = await readJsonStrict(data, 'source.json');
+    if (r.state === 'corrupt') throw new Error('source.json 内容损坏，为保留来源标识，不自动重建；请把 _data/source.json 的问题告诉维护者');
+    let s = r.state === 'ok' ? r.value : null;
+    if (s && (s.format !== FORMAT || !s.sourceId)) throw new Error('source.json 格式不对，不自动覆盖');
+    if (!s) {
       s = { format: FORMAT, formatVersion: VERSION, sourceId: crypto.randomUUID(), createdAt: isoNow(),
         note: '本文件夹机读存档的来源标识。换浏览器、换电脑继续用同一个文件夹时不变。' };
       await writeText(data, 'source.json', JSON.stringify(s, null, 1));
@@ -63,10 +111,19 @@
     return s;
   }
   async function loadManifest(data, src) {
-    const m = await readJson(data, 'manifest.json');
+    const r = await readJsonStrict(data, 'manifest.json');
+    const m = r.state === 'ok' ? r.value : null;
     if (m && m.format === FORMAT && m.sourceId === src.sourceId && m.threads && typeof m.seq === 'number') return m;
-    return { format: FORMAT, formatVersion: VERSION, sourceId: src.sourceId, generation: 1, seq: 0, coverage: 'partial',
-      updatedAt: null, journal: { files: [], firstSeq: 1 }, threads: {}, created: true };
+    if (r.state === 'ok' && m && m.sourceId && m.sourceId !== src.sourceId) throw new Error('清单的来源标识和 source.json 不一致，不自动覆盖');
+    // 确实没有清单，或清单内容损坏：从日志恢复序号和代数，坏清单先改名保留，再开新清单（之后自动重建补齐）
+    const js = await journalState(data);
+    if (r.state !== 'missing') {
+      try { await writeText(data, 'manifest.corrupt-' + Date.now() + '.json', r.state === 'corrupt' ? r.text : JSON.stringify(m), 'text/plain'); } catch (e) { /* 留不下也继续 */ }
+    }
+    return { format: FORMAT, formatVersion: VERSION, sourceId: src.sourceId,
+      generation: js.lastGen ? js.lastGen + 1 : 1, seq: js.lastSeq, coverage: 'partial',
+      updatedAt: null, journal: { files: js.files, firstSeq: js.files[0] ? js.files[0].firstSeq : js.lastSeq + 1 }, threads: {},
+      created: r.state === 'missing' && !js.lastSeq, recovered: r.state !== 'missing' || !!js.lastSeq };
   }
 
   // 防回退：浏览器记着这个来源发布过的最大序号（floorSeq）。清单的序号比它小，说明存档文件夹被旧备份覆盖过：
@@ -148,10 +205,10 @@
   }
 
   // 正文 Markdown 已经写好之后调用：生成逐帖 JSON、记日志、更新清单（最后一步＝就绪）
-  async function publish(dir, { tid, fileName, mdText, capture, floorSeqs }) {
+  async function publish(dir, { tid, fileName, mdText, capture, floorSeqs, instanceId }) {
     return locked(async () => {
       const data = await sub(dir, DATA); const tdir = await sub(data, THREADS);
-      const src = await source(data); const m = await loadManifest(data, src);
+      await claimWriter(data, instanceId); const src = await source(data); const m = await loadManifest(data, src);
       const events = guardRollback(m, (floorSeqs || {})[src.sourceId]);
       const p = A().parseFile(mdText);
       if (!p || String(p.fields.tid) !== String(tid)) throw new Error('机读存档：Markdown 解析失败');
@@ -177,9 +234,9 @@
   }
 
   // 采集失败/跳过：不改帖子版本，只在清单里记下最近一次失败，并写日志
-  async function recordFailure(dir, { tid, fid, reason, capture, floorSeqs }) {
+  async function recordFailure(dir, { tid, fid, reason, capture, floorSeqs, instanceId }) {
     return locked(async () => {
-      const data = await sub(dir, DATA); const src = await source(data); const m = await loadManifest(data, src);
+      const data = await sub(dir, DATA); await claimWriter(data, instanceId); const src = await source(data); const m = await loadManifest(data, src);
       const events = guardRollback(m, (floorSeqs || {})[src.sourceId]);
       const at = isoNow(); const seq = ++m.seq;
       const failure = { at, reason: String(reason || '').slice(0, 300), capture: capture || { known: false } };
@@ -193,10 +250,10 @@
 
   // 从文件夹现有的 Markdown 重建全部机读数据（首次启用、或怀疑不一致时）。分批做，每批返回下一批的起点。
   // 内容没变（Markdown 校验值相同）的帖子保留原版本号，阅读器不会把它们当成新内容。
-  async function rebuildBatch(dir, { after = '', limit = 150, floorSeqs } = {}) {
+  async function rebuildBatch(dir, { after = '', limit = 150, floorSeqs, instanceId } = {}) {
     return locked(async () => {
       const data = await sub(dir, DATA); const tdir = await sub(data, THREADS);
-      const src = await source(data); const m = await loadManifest(data, src);
+      await claimWriter(data, instanceId); const src = await source(data); const m = await loadManifest(data, src);
       const entries = guardRollback(m, (floorSeqs || {})[src.sourceId]);
       // 4.3.1：上次重建中途失败时，从断点接着做，不再换代、不从头来
       if (!after && m.rebuilding && m.rebuilding.next) after = m.rebuilding.next;
@@ -208,8 +265,9 @@
       const batch = names.filter((n) => n > after).slice(0, limit);
       for (const name of batch) {
         let text; try { text = await (await (await dir.getFileHandle(name)).getFile()).text(); } catch (e) { continue; }
-        const p = A().parseFile(text); if (!p) continue;
+        const p = A().parseFile(text); if (!p) { if (m.rebuilding) (m.rebuilding.bad = m.rebuilding.bad || {})[name] = 1; continue; }
         const tid = String(p.fields.tid); const prev = m.threads[tid] || {};
+        if ((A().T_NAME.exec(name) || [])[1] !== tid) { if (m.rebuilding) (m.rebuilding.bad = m.rebuilding.bad || {})[name] = 1; continue; } // 文件名和内容的帖子号对不上：不收录，单独列出
         if (m.rebuilding) m.rebuilding.seen[tid] = 1;
         const mdSha256 = await sha256(text);
         if (prev.mdSha256 === mdSha256 && prev.mdFile === name && prev.jsonSha256) continue; // 没变
@@ -226,10 +284,19 @@
       const done = batch.length < limit;
       if (!done && m.rebuilding) m.rebuilding.next = batch[batch.length - 1];
       if (done) {
-        // 清单里有、文件夹里已经找不到 Markdown 的帖子：标记缺失，不删记录
-        const seen = (m.rebuilding && m.rebuilding.seen) || {};
-        for (const [tid, t] of Object.entries(m.threads)) if (t.mdFile && !seen[tid]) t.mdMissing = true; else if (t.mdMissing && seen[tid]) delete t.mdMissing;
-        delete m.rebuilding; m.coverage = 'full'; m.rebuiltAt = isoNow();
+        // 4.4.1：缺失与否只看这次完整扫描到的文件名，不依赖重建过程中记的 seen（清单中途出问题时 seen 不完整，会误标）
+        const present = new Map();
+        for (const n of names) { const t = A().T_NAME.exec(n); if (t) present.set(t[1], n); }
+        const bad = (m.rebuilding && m.rebuilding.bad) || {};
+        for (const [tid, t] of Object.entries(m.threads)) {
+          if (!t.mdFile) continue;
+          if (present.has(tid)) { delete t.mdMissing; if (t.mdFile !== present.get(tid) && !bad[present.get(tid)]) t.mdFile = present.get(tid); }
+          else t.mdMissing = true;
+        }
+        // 文件夹里有、清单里还没收录的帖子（不算解析不了的文件）：不宣布「全部」，下次自动接着补
+        const notIndexed = [...present].filter(([tid, n]) => !bad[n] && !(m.threads[tid] && m.threads[tid].jsonSha256)).length;
+        m.unparsable = Object.keys(bad).slice(0, 200);
+        delete m.rebuilding; m.coverage = notIndexed ? 'partial' : 'full'; m.rebuiltAt = isoNow(); m.notIndexed = notIndexed;
         entries.push({ seq: ++m.seq, gen: m.generation, at: m.rebuiltAt, type: 'rebuild_done', threads: Object.keys(m.threads).length });
       }
       await journalAppend(data, m, entries);
@@ -243,8 +310,9 @@
     let data; try { data = await dir.getDirectoryHandle(DATA); } catch (e) { return { ok: true, exists: false }; }
     const m = await readJson(data, 'manifest.json'); const s = await readJson(data, 'source.json');
     if (!m) return { ok: true, exists: false, sourceId: s && s.sourceId };
+    let mdCount = 0; for await (const [name, h] of dir.entries()) if (h.kind === 'file' && A().T_NAME.test(name)) mdCount++;
     return { ok: true, exists: true, sourceId: m.sourceId, generation: m.generation, seq: m.seq, coverage: m.coverage,
-      threads: Object.keys(m.threads || {}).length, updatedAt: m.updatedAt, rebuiltAt: m.rebuiltAt || null, rebuilding: !!m.rebuilding };
+      threads: Object.keys(m.threads || {}).length, withMd: Object.values(m.threads || {}).filter((t) => t.mdFile && !t.mdMissing).length, mdCount, updatedAt: m.updatedAt, rebuiltAt: m.rebuiltAt || null, rebuilding: !!m.rebuilding };
   }
 
   root.ArchiveData = { FORMAT, VERSION, publish, recordFailure, rebuildBatch, status, threadFromParsed, sha256 };

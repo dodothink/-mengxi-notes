@@ -55,6 +55,18 @@ button[data-toggle]{border-radius:9px;padding:8px 12px;background:#f2f6f3;color:
   </section>
 
   <section>
+    <h2>停机提醒与自动恢复</h2>
+    <p class="dim">采集因为论坛验证、要求登录而暂停，或者巡查开着却很久没有新存档时，在电脑右上角弹通知提醒。
+    验证类的暂停，冷却后插件每次只试读一页版块列表，论坛正常了就自动恢复并通知你；还不正常就隔 1、2、4 小时再试（最长 4 小时一次）。
+    插件不会自动答题、换 IP 或伪装；要求登录时只提醒，不自动恢复。</p>
+    <p><label><input type="checkbox" id="wdNotify"> 弹通知提醒</label>　<label><input type="checkbox" id="wdAuto"> 验证类暂停冷却后自动试着恢复</label></p>
+    <p>暂停期间每隔 <input type="number" id="wdRemind" min="30" max="1440" style="width:5em"> 分钟再提醒一次；
+      超过 <input type="number" id="wdStale" min="1" max="72" style="width:4em"> 小时没有新存档就提醒
+      <button id="wdSave" class="ghost">保存</button></p>
+    <p id="wdMsg" class="dim"></p>
+  </section>
+
+  <section>
     <h2>机读存档（给本地阅读程序用）</h2>
     <p class="dim">在存档文件夹里另存一份机器读的数据（<code>_data/</code>）：逐帖 JSON、版本化清单和变更日志。Markdown 照旧，不受影响。
     全自动维护：每存一个帖子立即更新；没收录全（第一次启用、换了文件夹）或上次中断时，插件会在空闲时自动在后台补齐，不用管。

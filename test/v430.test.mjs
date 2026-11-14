@@ -4,13 +4,13 @@ function load(){const c=vm.createContext({Blob,console,Date,Promise,Map,Set,JSON
  for(const f of ['archive-merge.js','archive-folder.js','archive-data.js'])vm.runInContext(readFileSync(new URL('../extension/'+f,import.meta.url),'utf8'),c,{filename:f});return c;}
 let clock=1000;
 function dirHandle(name='存档'){const files=new Map(),dirs=new Map();
- const fh=(n)=>({kind:'file',name:n,async getFile(){const e=files.get(n);if(!e)throw Error('NotFound');const b=new Blob([e.text]);return Object.assign(b,{lastModified:e.mtime,name:n});},
+ const fh=(n)=>({kind:'file',name:n,async getFile(){if(d.failRead&&d.failRead[n]>0){d.failRead[n]--;const er=new Error('The requested file could not be read');er.name=d.failReadName||'NotReadableError';throw er;}const e=files.get(n);if(!e){const er=new Error('NotFound');er.name='NotFoundError';throw er;}const b=new Blob([e.text]);return Object.assign(b,{lastModified:e.mtime,name:n});},
   async createWritable(o={}){let buf=o.keepExistingData&&files.has(n)?files.get(n).text:'';let pos=buf.length;
    return {seek:async p=>{pos=p;},write:async x=>{const s=typeof x==='string'?x:await x.text();buf=buf.slice(0,pos)+s;pos=buf.length;},abort:async()=>{},close:async()=>{if(d.failWrites)throw Error('NotAllowedError');if(d.busy>0){d.busy--;const e=new Error('An attempt was made to write to a file or directory which could not be modified due to the state of the underlying filesystem.');e.name='InvalidStateError';throw e;}files.set(n,{text:buf,mtime:++clock});}};}});
  const d={kind:'directory',name,files,dirs,failWrites:false,busy:0,
   async *entries(){for(const n of [...files.keys()])yield [n,fh(n)];for(const [n,x] of dirs)yield [n,x];},
-  async getFileHandle(n,o={}){if(!files.has(n)){if(!o.create)throw Error('NotFound');files.set(n,{text:'',mtime:++clock});}return fh(n);},
-  async getDirectoryHandle(n,o={}){if(!dirs.has(n)){if(!o.create)throw Error('NotFound');dirs.set(n,dirHandle(n));}return dirs.get(n);},
+  async getFileHandle(n,o={}){if(!files.has(n)){if(!o.create){const er=new Error('NotFound');er.name='NotFoundError';throw er;}files.set(n,{text:'',mtime:++clock});}return fh(n);},
+  async getDirectoryHandle(n,o={}){if(!dirs.has(n)){if(!o.create){const er=new Error('NotFound');er.name='NotFoundError';throw er;}dirs.set(n,dirHandle(n));}return dirs.get(n);},
   async removeEntry(n){if(!files.delete(n))throw Error('NotFound');},
   put(n,t){files.set(n,{text:t,mtime:++clock});},get(n){return files.get(n)?.text;}};return d;}
 const doc=(tid,cap,floors,{title='测试帖',author='甲'}={})=>`---\n标题: ${JSON.stringify(title)}\n网址: https://bbs.my0511.com/f152b-t${tid}z\ntid: ${tid}\n版块: 百姓话题\n查看: 10\n回复: ${floors.length-1}\n首帖: 2026-9-1 10:01\n已存楼数: ${floors.length}\n采集时间: ${cap}\n---\n\n# ${title}\n\n${floors.length} 楼 · 2 人 · 2026-09-01 至 2026-09-01\n\n## 参与者\n\n| 作者 | 地区 | 注册 | 发言数 | 发言楼层 |\n|---|---|---|---|---|\n| ${author} | 江苏省 | 2020-1-1 | 1 | x |\n\n## 正文\n\n`+floors.map(([n,t,a])=>`### ${n}楼 · ${a||(n===1?author:'乙')} · 2026-9-1 10:0${n} · 江苏省 · iPhone <a id="f${n}"></a>\n\n${t}\n`).join('\n');
@@ -133,4 +133,63 @@ test('4.3.1: an interrupted rebuild resumes from where it stopped without starti
  r=await c.ArchiveData.rebuildBatch(d,{after:'',limit:2});assert.equal(r.generation,gen);assert.equal(r.next,name(304));
  let after=r.next;while(!r.done){r=await c.ArchiveData.rebuildBatch(d,{after,limit:2});after=r.next;}
  const m=manifest(d);assert.equal(m.coverage,'full');assert.equal(Object.keys(m.threads).length,6);assert.equal(m.generation,gen);assert.equal(m.rebuilding,undefined);
+});
+test('4.4: only one browser may write _data at a time — a second writer within 3 minutes is refused and the manifest is untouched',async()=>{
+ const c=load(),d=dirHandle();
+ const r1=await c.ArchiveFolder.writeMerged(d,{tid:'1',fileName:name(1),markdown:doc(1,'2026-09-01 11:00',[[1,'a']]),instanceId:'edge'});assert.equal(r1.dataError,null);
+ const before=data(d).get('manifest.json');
+ const r2=await c.ArchiveFolder.writeMerged(d,{tid:'2',fileName:name(2),markdown:doc(2,'2026-09-01 11:00',[[1,'b']]),instanceId:'chrome'});
+ assert.match(r2.dataError,/另一个浏览器/);assert.equal(data(d).get('manifest.json'),before);assert.ok(d.get(name(2)),'Markdown still written');
+ const w=JSON.parse(data(d).get('writer.json'));w.at=Date.now()-4*60000;data(d).put('writer.json',JSON.stringify(w));
+ const r3=await c.ArchiveFolder.writeMerged(d,{tid:'2',fileName:name(2),markdown:doc(2,'2026-09-01 12:00',[[1,'b'],[2,'c']]),instanceId:'chrome'});assert.equal(r3.dataError,null);
+ const st=await c.ArchiveData.status(d);assert.equal(st.mdCount,2);assert.equal(st.withMd,2);
+});
+
+// ---------- 4.4.1：清单读取故障与重建 ----------
+const rebuildAll=async(c,d,limit=2)=>{let after='',r;do{r=await c.ArchiveData.rebuildBatch(d,{after,limit});after=r.next;}while(!r.done);return r;};
+test('4.4.1: a transient read error on the manifest is retried — entries, seq and generation are kept (no empty manifest)',async()=>{
+ const c=load(),d=dirHandle();
+ for(let i=1;i<=3;i++)await write(c,d,i,'2026-09-01 11:00',[[1,'x'+i]]);
+ const m0=manifest(d);data(d).failRead={'manifest.json':2};
+ const r=await write(c,d,4,'2026-09-01 11:00',[[1,'y']]);assert.equal(r.dataError,null);
+ const m=manifest(d);assert.equal(Object.keys(m.threads).length,4);assert.equal(m.generation,m0.generation);assert.equal(m.seq,m0.seq+1);
+});
+test('4.4.1: if the manifest cannot be read at all, nothing is written to _data (Markdown still saved)',async()=>{
+ const c=load(),d=dirHandle();
+ await write(c,d,1,'2026-09-01 11:00',[[1,'a']]);const before=data(d).get('manifest.json');
+ data(d).failRead={'manifest.json':99};
+ const r=await write(c,d,2,'2026-09-01 11:00',[[1,'b']]);
+ assert.match(r.dataError,/读不出 manifest\.json/);assert.equal(data(d).get('manifest.json'),before);assert.ok(d.get(name(2)));
+});
+test('4.4.1: a corrupt manifest is kept aside and a new one continues seq/generation from the journal',async()=>{
+ const c=load(),d=dirHandle();
+ for(let i=1;i<=3;i++)await write(c,d,i,'2026-09-01 11:00',[[1,'x'+i]]);
+ const m0=manifest(d);data(d).put('manifest.json','{"format":"my0511-arch');
+ await write(c,d,9,'2026-09-01 11:00',[[1,'z']]);
+ const m=manifest(d);assert.ok(m.seq>m0.seq);assert.ok(m.generation>m0.generation);assert.equal(m.coverage,'partial');
+ assert.ok([...data(d).files.keys()].some(n=>/^manifest\.corrupt-\d+\.json$/.test(n)));
+ assert.equal(m.journal.files[0].name,'000001.jsonl');assert.equal(m.journal.files[0].firstSeq,1);
+ await rebuildAll(c,d,10);assert.equal(Object.keys(manifest(d).threads).length,4);assert.equal(manifest(d).coverage,'full');
+});
+test('4.4.1: source.json is never replaced because of a read error; a damaged one stops writing instead of changing the source id',async()=>{
+ const c=load(),d=dirHandle();
+ await write(c,d,1,'2026-09-01 11:00',[[1,'a']]);const sid=JSON.parse(data(d).get('source.json')).sourceId;
+ data(d).failRead={'source.json':2};await write(c,d,2,'2026-09-01 11:00',[[1,'b']]);
+ assert.equal(JSON.parse(data(d).get('source.json')).sourceId,sid);
+ data(d).put('source.json','{oops');const r=await write(c,d,3,'2026-09-01 11:00',[[1,'c']]);assert.match(r.dataError,/source\.json/);assert.equal(data(d).get('source.json'),'{oops');
+});
+test('4.4.1: if the manifest disappears in the middle of a rebuild, existing Markdown is never marked missing and coverage is only "full" once everything is indexed',async()=>{
+ const c=load(),d=dirHandle();
+ for(let i=1;i<=6;i++)d.put(name(400+i),doc(400+i,'2026-09-01 11:00',[[1,'正文'+i]]));
+ let r=await c.ArchiveData.rebuildBatch(d,{after:'',limit:2});
+ data(d).files.delete('manifest.json'); // 清单中途没了
+ r=await c.ArchiveData.rebuildBatch(d,{after:r.next,limit:2});
+ while(!r.done)r=await c.ArchiveData.rebuildBatch(d,{after:r.next,limit:2});
+ let m=manifest(d);assert.equal(Object.values(m.threads).filter(t=>t.mdMissing).length,0);assert.equal(m.coverage,'partial');assert.equal(m.notIndexed,2);
+ await rebuildAll(c,d,10);m=manifest(d);assert.equal(m.coverage,'full');assert.equal(Object.keys(m.threads).length,6);
+});
+test('4.4.1: a file whose name and content disagree on tid is listed as unparsable and does not block "full"',async()=>{
+ const c=load(),d=dirHandle();
+ d.put(name(501),doc(501,'2026-09-01 11:00',[[1,'a']]));d.put(name(502),doc(999,'2026-09-01 11:00',[[1,'b']]));
+ await rebuildAll(c,d,10);const m=manifest(d);assert.equal(m.coverage,'full');assert.equal(m.unparsable.join(),name(502));assert.equal(m.threads['999'],undefined);
 });

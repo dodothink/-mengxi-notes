@@ -121,3 +121,25 @@ document.getElementById('dataRebuild').onclick = async () => {
   dataMsg.textContent = '已开始重建…'; setTimeout(showData, 1500);
 };
 showData();
+
+// 4.4.0：停机提醒与自动恢复
+async function showWatchdog() {
+  const s = await chrome.runtime.sendMessage({ type: 'GET_SWEEP' });
+  if (!s || !s.ok) return;
+  const w = s.watchdog || {};
+  document.getElementById('wdNotify').checked = w.notify !== false;
+  document.getElementById('wdAuto').checked = w.autoResume !== false;
+  document.getElementById('wdRemind').value = w.remindMin || 120;
+  document.getElementById('wdStale').value = w.staleHours || 6;
+  const st = s.watchdogState || {};
+  const m = document.getElementById('wdMsg');
+  m.textContent = st.challengeId && st.nextProbe ? `采集正在暂停中。下次自动试读约 ${new Date(st.nextProbe).toLocaleTimeString()}${st.lastProbeError ? '（上次：' + st.lastProbeError + '）' : ''}。` : '';
+}
+document.getElementById('wdSave').onclick = async () => {
+  const value = { notify: document.getElementById('wdNotify').checked, autoResume: document.getElementById('wdAuto').checked,
+    remindMin: Number(document.getElementById('wdRemind').value), staleHours: Number(document.getElementById('wdStale').value) };
+  const r = await chrome.runtime.sendMessage({ type: 'SET', key: 'watchdog', value });
+  document.getElementById('wdMsg').textContent = r && r.ok ? '已保存。' : '保存失败：' + ((r && r.error) || '');
+  showWatchdog();
+};
+showWatchdog();

@@ -69,7 +69,7 @@
     return target;
   }
 
-  async function writeMerged(dir, { tid, fileName, markdown, capture, floorSeqs }) {
+  async function writeMerged(dir, { tid, fileName, markdown, capture, floorSeqs, instanceId }) {
     tid = String(tid || '');
     const A = M();
     if (!/^\d+$/.test(tid)) throw new Error('帖子编号无效');
@@ -111,7 +111,8 @@
       // 4.3.0：Markdown 写好之后，再发布机读数据（逐帖 JSON → 日志 → 清单）。机读部分失败不影响 Markdown，但会报给调用方。
       let data = null, dataError = null;
       if (root.ArchiveData) {
-        try { data = await root.ArchiveData.publish(dir, { tid, fileName, mdText: merged.text, capture, floorSeqs }); }
+        if (!instanceId) { try { instanceId = ((await root.chrome.storage.local.get('safety380')).safety380 || {}).profileId; } catch (e) { /* offscreen 里没有 storage，由后台传入 */ } }
+        try { data = await root.ArchiveData.publish(dir, { tid, fileName, mdText: merged.text, capture, floorSeqs, instanceId }); }
         catch (e) { dataError = String(e.message || e); }
       }
       return { ok: true, fileName, floors: merged.floors, edited: merged.edited, mergedFrom: names.length, moved, data, dataError };

@@ -1,0 +1,83 @@
+{
+  "mode": "offline mocked browser; findings reproduced, not fixes",
+  "count": 9,
+  "results": [
+    {
+      "name": "Concurrent postOne calls enter doPost twice",
+      "result": "observed",
+      "evidence": {
+        "calls": 2
+      }
+    },
+    {
+      "name": "CAPTCHA pauses posting but closes challenge tab",
+      "result": "observed",
+      "evidence": {
+        "closed": [
+          123
+        ],
+        "paused": "captcha",
+        "status": "pending"
+      }
+    },
+    {
+      "name": "Generic exception after submission is eligible for retry",
+      "result": "observed",
+      "evidence": {
+        "status": "retry"
+      }
+    },
+    {
+      "name": "Cached auto plan survives daily cap already reached",
+      "result": "observed",
+      "evidence": {
+        "next": {
+          "id": "one",
+          "at": 1790372523336,
+          "auto": true
+        },
+        "dailyMax": 1,
+        "successesToday": 1
+      }
+    },
+    {
+      "name": "Restart marks interrupted posting failed without automatic replay",
+      "result": "observed",
+      "evidence": {
+        "status": "failed"
+      }
+    },
+    {
+      "name": "Success keyword wins over CAPTCHA keyword",
+      "result": "observed",
+      "evidence": {
+        "ok": true
+      }
+    },
+    {
+      "name": "Short ordinary post mentioning verification can be misclassified",
+      "result": "observed",
+      "evidence": {
+        "syntheticFixture": true,
+        "result": true
+      }
+    },
+    {
+      "name": "HTTP 403 challenge body is not inspected",
+      "result": "observed",
+      "evidence": {
+        "status": 403,
+        "bodyRead": false,
+        "challenge": false
+      }
+    },
+    {
+      "name": "Different thread IDs can export to identical filenames",
+      "result": "observed",
+      "evidence": {
+        "a": "2026-09-25 同名帖子.md",
+        "b": "2026-09-25 同名帖子.md"
+      }
+    }
+  ]
+}

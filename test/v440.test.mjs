@@ -66,3 +66,24 @@ test('4.4.1: only one rebuild runs at a time even if several triggers fire toget
  await w.eval('maybeAutoRebuild(true)');for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));
  assert.equal(starts.length,1,'recently finished: not re-run on every write');
 });
+test('4.4.2: asking for a full re-capture upgrades a thread that is already queued for an incremental update',async()=>{
+ const w=boot({haltCollect:true,queue:[{tid:'5',fid:'152',title:'t',from:4}]});await w.eval('Safety.ready');
+ await w.eval("enqueueThreads([{tid:'5',fid:'152',title:'t',full:true},{tid:'6',fid:'152',title:'u',full:true}])");
+ assert.equal(w.data.queue.length,2);assert.equal(w.data.queue[0].from,1);assert.equal(w.data.queue[0].full,true);assert.equal(w.data.queue[1].from,1);
+});
+test('4.4.3: a no-permission page keeps the forum\'s own reason (e.g. no permission for history threads) in the skip reason',async()=>{
+ const w=boot();await w.eval('Safety.ready');
+ const html='<html><head><meta charset="utf-8"><title>错误提示</title></head><body>梦溪论坛 » 提示信息 您无权进行当前操作，这可能因以下原因之一造成:<br>您所在的用户组没有浏览历史帖子的权限。<br>会员登录'+'<p>x</p>'.repeat(3000)+'</body></html>';
+ const buf=new TextEncoder().encode(html).buffer;w.c.fetch=async u=>({ok:true,status:200,url:u,headers:{get:()=>'text/html; charset=utf-8'},arrayBuffer:async()=>buf});
+ await assert.rejects(w.eval("fetchHtml('https://bbs.my0511.com/f152b-t6322204z')"),e=>e.permanent&&/论坛说：您所在的用户组没有浏览历史帖子的权限/.test(e.message)&&e.historyLocked===true);
+});
+test('4.4.4: reading a thread to its last page records the forum reply count; a full read also marks it verified, so sweeps stop re-reading threads with deleted floors',async()=>{
+ const w=boot({haltCollect:false,useFolder:false,queue:[{tid:'77',fid:'152',title:'t',from:1,full:true}]});await w.eval('Safety.ready');
+ w.chrome.downloads={download:async()=>1};w.chrome.offscreen={hasDocument:async()=>true,createDocument:async()=>{}};w.chrome.runtime.sendMessage=async()=>({ok:true,known:{}});
+ const fl=n=>({floor:n,author:'甲',time:'2026-9-1 10:0'+n,text:'第'+n+'楼',pid:String(1000+n)});
+ w.eval(`fetchPageWithRetry=async()=>({meta:{tid:'77',title:'t',replies:3,totalPages:1,board:'百姓话题'},floors:[${JSON.stringify(fl(1))},${JSON.stringify(fl(2))},${JSON.stringify(fl(4))}]})`);
+ await w.eval('Collector.runJob()');
+ const r=w.data['t:77'];assert.ok(r,'thread stored');assert.equal(r.checkedReplies,3);assert.equal(r.verified.maxFloor,4);assert.equal(r.verified.gap,0);
+ assert.equal(await w.eval(`noNewSinceCheck(${JSON.stringify(r)},3)`),true,'no new replies: skip');
+ assert.equal(await w.eval(`noNewSinceCheck(${JSON.stringify(r)},4)`),false,'a new reply: read again');
+});

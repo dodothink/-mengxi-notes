@@ -48,14 +48,34 @@
     if (!f.ok) throw new Error('存档文件夹没有授权。');
     return f.dir;
   }
+  // 4.4.5：体检时采集还在跑，个别文件会正好被改写或移走（NotReadableError / NotFoundError）。
+  // 以前一份读不到整个体检就失败；现在每份重试几次，仍读不到就跳过并在结果里说明。
+  async function readOne(dir, name, h) {
+    let last;
+    for (let i = 0; i < 4; i++) {
+      try {
+        const file = await (i ? (await dir.getFileHandle(name)) : h).getFile();
+        let c = cache.get(name);
+        if (!c || c.lm !== file.lastModified) { const text = await file.text(); c = { lm: file.lastModified, p: A.parseFile(text), size: file.size }; cache.set(name, c); }
+        return c;
+      } catch (e) {
+        last = e;
+        if (/NotFound/i.test(e && e.name)) return null; // 被合并移走了
+        await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+      }
+    }
+    throw last;
+  }
+  async function readTextRetry(d, name) {
+    let last; for (let i = 0; i < 4; i++) { try { return await (await (await d.getFileHandle(name)).getFile()).text(); } catch (e) { last = e; if (/NotFound/i.test(e && e.name)) throw e; await new Promise((r) => setTimeout(r, 300 * (i + 1))); } }
+    throw last;
+  }
   async function loadAll(dir, progress) {
-    const out = []; let i = 0;
-    for await (const [name, h] of dir.entries()) {
-      if (h.kind !== 'file' || !(A.T_NAME.test(name) || A.OLD_NAME.test(name))) continue;
-      const file = await h.getFile();
-      let c = cache.get(name);
-      if (!c || c.lm !== file.lastModified) { const text = await file.text(); c = { lm: file.lastModified, p: A.parseFile(text), size: file.size }; cache.set(name, c); }
-      out.push({ name, p: c.p });
+    const out = []; out.unreadable = []; let i = 0;
+    const entries = []; for await (const [name, h] of dir.entries()) if (h.kind === 'file' && (A.T_NAME.test(name) || A.OLD_NAME.test(name))) entries.push([name, h]);
+    for (const [name, h] of entries) {
+      try { const c = await readOne(dir, name, h); if (c) out.push({ name, p: c.p }); }
+      catch (e) { out.unreadable.push(name); }
       if (++i % 200 === 0 && progress) progress(i);
     }
     return out;
@@ -68,6 +88,7 @@
   }
   const dayKey = (t) => { const m = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(t || ''); return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : ''; };
   function floorUrl(p, floor) { const m = /\/f(\d+)b-t(\d+)z/.exec(p.fields['网址'] || ''); return m ? `https://bbs.my0511.com/f${m[1]}b-t${m[2]}z-${Math.max(1, Math.ceil((floor || 1) / 50))}` : ''; }
+  function topReason(list) { const c = new Map(); for (const x of list) { const k = (x.reason.match(/（论坛说：(.*?)）/) || [, x.reason.replace(/，已跳过.*$/, '')])[1]; c.set(k, (c.get(k) || 0) + 1); } return [...c].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, n]) => `${k} ${n} 个`).join('；'); }
   function title(p) { let t = p.fields['标题'] || ''; try { t = JSON.parse(t); } catch (e) { /* 原样 */ } return t; }
 
   // ---------- 全文搜索 ----------
@@ -129,6 +150,25 @@
       (byTid.get(tid) || byTid.set(tid, []).get(tid)).push({ name, p });
     }
     const dups = [...byTid.entries()].filter(([, v]) => v.length > 1);
+    // 4.4.2：已经整帖核对过（从第 1 页采到最后一页成功）、差额没有变大的帖子，算「已核对」：少的楼是论坛删楼或不可见，不再列为问题
+    let manifest = null; try { manifest = JSON.parse(await readTextRetry(await dir.getDirectoryHandle('_data'), 'manifest.json')); } catch (e) { /* 没有机读存档就全部按未核对 */ }
+    // 4.4.2 之前整帖重采过的帖子没有 lastFull：从变更日志里找「最后一次完整采集」，正文从那以后没变过就同样算已核对
+    const fullSha = new Map();
+    if (manifest) {
+      try {
+        const jdir = await (await dir.getDirectoryHandle('_data')).getDirectoryHandle('journal');
+        const names = []; for await (const [n, h] of jdir.entries()) if (h.kind === 'file' && /^\d{6}\.jsonl$/.test(n)) names.push(n);
+        names.sort();
+        for (const n of names) {
+          let text = ''; try { text = await readTextRetry(jdir, n); } catch (e) { continue; } // 正在追加的日志读不到就跳过这一份
+          for (const line of text.split('\n')) { if (!line.includes('"complete":true')) continue; try { const e = JSON.parse(line); if (e.type === 'thread' && e.complete === true) fullSha.set(String(e.tid), e.mdSha256); } catch (x) { /* 半行跳过 */ } }
+        }
+      } catch (e) { /* 没有日志 */ }
+    }
+    const st = await chrome.storage.local.get(['queue', 'job']);
+    const queued = new Set((st.queue || []).map((x) => String(x.tid)));
+    if (st.job && ['running', 'error', 'waiting_human'].includes(st.job.state)) queued.add(String(st.job.tid));
+    const verified = [], noAccess = [];
     for (const [tid, v] of byTid) {
       const p = v.map((x) => x.p).sort((a, b) => A.timeKey(a.cap).localeCompare(A.timeKey(b.cap))).pop();
       const nums = [...p.floors.values()].map((f) => f.n).filter((n) => n != null);
@@ -137,17 +177,40 @@
       const replies = Number(p.fields['回复']);
       const behind = Number.isFinite(replies) && replies + 1 > max ? replies + 1 - max : 0;
       if (missing || behind) {
+        const me = manifest && manifest.threads && manifest.threads[tid];
+        const lf = me && me.lastFull;
+        if (lf && behind <= (lf.gap || 0) && missing <= (lf.holes || 0)) { verified.push(tid); continue; }
+        if (me && me.mdSha256 && fullSha.get(tid) === me.mdSha256) { verified.push(tid); continue; }
         const m = /\/f(\d+)b-t(\d+)z/.exec(p.fields['网址'] || '');
-        if (m) gaps.push({ tid, fid: m[1], title: title(p), missing, behind });
+        if (m) gaps.push({ tid, fid: m[1], title: title(p), missing, behind, queued: queued.has(tid) });
       }
     }
-    lastCheck = { dups, gaps };
-    const out = [`共 ${all.length} 份文件，${byTid.size} 个帖子。`,
+    // 4.4.4：浏览器记录里有「已核对」标记、论坛回复数也没变的，同样算已核对（没有机读存档时也认）
+    if (gaps.length) {
+      const recs = await chrome.storage.local.get(gaps.map((g) => 't:' + g.tid));
+      for (let i = gaps.length - 1; i >= 0; i--) {
+        const r = recs['t:' + gaps[i].tid], v = r && r.verified;
+        if (v && gaps[i].behind <= v.gap && !gaps[i].missing) { verified.push(gaps[i].tid); gaps.splice(i, 1); }
+      }
+    }
+    // 4.4.3：最近一次重采被论坛拒绝（没有权限、历史帖子要登录、帖子打不开）的，单独列出，不算「需要核对」，也不再自动重排
+    if (gaps.length) {
+      const recs = await chrome.storage.local.get(gaps.map((g) => 't:' + g.tid));
+      for (let i = gaps.length - 1; i >= 0; i--) {
+        const r = recs['t:' + gaps[i].tid];
+        if (r && r.failReason && /没有权限|论坛提示|打不开/.test(r.failReason) && !gaps[i].queued) { noAccess.push({ ...gaps[i], reason: r.failReason }); gaps.splice(i, 1); }
+      }
+    }
+    lastCheck = { dups, gaps, noAccess };
+    const out = [`共 ${all.length} 份文件，${byTid.size} 个帖子。` + (all.unreadable && all.unreadable.length ? `另有 ${all.unreadable.length} 份正好在被采集改写，这次没读到，稍后再体检一次即可。` : ''),
       `重复文件：${dups.length} 个帖子有多份文件${dups.length ? '（' + dups.slice(0, 10).map(([t]) => t).join('、') + (dups.length > 10 ? ' …' : '') + '）' : ''}`,
       `无法解析的文件：${broken.length} 份${broken.length ? '\n  ' + broken.slice(0, 20).join('\n  ') : ''}`,
-      `缺楼：${gaps.filter((g) => g.missing).length} 个帖子中间有缺楼；${gaps.filter((g) => g.behind).length} 个帖子比论坛显示的楼数少（可能是论坛删楼，也可能是没采全）。`];
+      `需要核对：${gaps.length} 个帖子（中间缺楼 ${gaps.filter((g) => g.missing).length} 个、比论坛显示的楼数少 ${gaps.filter((g) => g.behind).length} 个），其中 ${gaps.filter((g) => g.queued).length} 个已经在采集队列里。`,
+      `已核对：${verified.length} 个帖子整帖重采过，少的楼是论坛删楼或不可见，不再列为问题。`,
+      `论坛不让看：${noAccess.length} 个帖子重采时被论坛拒绝${noAccess.length ? '（最常见的原因：' + topReason(noAccess) + '）。这些不是插件没采全，需要账号有权限才能补；在浏览器里能打开的话告诉维护者' : ''}。`];
     note('checkOut', out.join('\n'));
-    $('fixDup').hidden = !dups.length; $('fixGap').hidden = !gaps.length;
+    $('fixDup').hidden = !dups.length; $('fixGap').hidden = !gaps.filter((g) => !g.queued).length;
+    showHealthProgress().catch(() => {});
   });
   $('fixDup').onclick = () => guard('checkOut', async () => {
     if (!lastCheck) return;
@@ -166,12 +229,49 @@
   });
   $('fixGap').onclick = () => guard('checkOut', async () => {
     if (!lastCheck) return;
-    if (!confirm(`把 ${lastCheck.gaps.length} 个帖子加进采集队列，从第 1 页整帖重采？帖子多时要花不少时间。`)) return;
-    const threads = lastCheck.gaps.slice(0, 500).map((g) => ({ tid: g.tid, fid: g.fid, title: g.title, full: true }));
-    const r = await send({ type: 'ENQUEUE', threads });
-    note('checkOut', `已加入队列，队列里现在有 ${r.size} 个帖子。采集要在面板里处于「恢复采集」状态才会开始。`);
+    const todo = lastCheck.gaps.filter((g) => !g.queued);
+    if (!todo.length) { note('checkOut', '需要核对的帖子都已经在队列里了。'); return; }
+    if (!confirm(`把 ${todo.length} 个帖子加进采集队列，从第 1 页整帖重采？帖子多时要花不少时间。\n重采完的帖子会记成「已核对」，下次体检不再列出。`)) return;
+    // 4.4.2：以前一次只加前 500 个，剩下的不会进队列；现在分批全部加进去，并记下这一批，工作台显示进度
+    let size = 0;
+    for (let i = 0; i < todo.length; i += 500) {
+      const r = await send({ type: 'ENQUEUE', threads: todo.slice(i, i + 500).map((g) => ({ tid: g.tid, fid: g.fid, title: g.title, full: true })) });
+      size = r.size;
+    }
+    const prev = (await chrome.storage.local.get('healthRun')).healthRun;
+    const tids = [...new Set([...(prev && prev.tids && !prev.doneAt ? prev.tids : []), ...todo.map((g) => g.tid)])];
+    await chrome.storage.local.set({ healthRun: { at: Date.now(), total: tids.length, tids } });
+    note('checkOut', `已把 ${todo.length} 个帖子加入队列，队列里现在共有 ${size} 个帖子。采集要在面板里处于「恢复采集」状态才会开始。`);
     $('fixGap').hidden = true;
+    showHealthProgress().catch(() => {});
   });
+
+  // 整帖重采进度：这一批里还在队列/正在采的、已完成的、跳过的
+  let healthTimer = null;
+  async function showHealthProgress() {
+    const s = await chrome.storage.local.get(['healthRun', 'queue', 'job', 'haltCollect', 'humanChallenge']);
+    const run = s.healthRun; const box = $('healthProgress');
+    if (!box) return;
+    if (!run || !run.tids || !run.tids.length) { box.textContent = ''; return; }
+    const queue = s.queue || [];
+    const pos = new Map(queue.map((x, i) => [String(x.tid), i]));
+    const cur = s.job && s.job.state !== 'done' && s.job.state !== 'stopped' ? String(s.job.tid) : null;
+    const waiting = run.tids.filter((t) => pos.has(t)).length;
+    const active = cur && run.tids.includes(cur) ? 1 : 0;
+    const finished = run.tids.filter((t) => !pos.has(t) && t !== cur);
+    const recs = finished.length ? await chrome.storage.local.get(finished.slice(0, 3000).map((t) => 't:' + t)) : {};
+    const skipped = finished.filter((t) => recs['t:' + t] && recs['t:' + t].failReason).length;
+    const firstPos = run.tids.map((t) => pos.get(t)).filter((x) => x != null).sort((a, b) => a - b)[0];
+    const L = [`整帖重采进度（${new Date(run.at).toLocaleString()} 加入的 ${run.total} 个）：已完成 ${finished.length - skipped}，跳过 ${skipped}，正在采 ${active}，排队中 ${waiting}。`,
+      `采集队列总共 ${queue.length} 个帖子${firstPos != null ? `，这一批最靠前的排在第 ${firstPos + 1} 位` : ''}。`];
+    if (s.humanChallenge) L.push('采集现在因为论坛验证或登录而暂停，进度不会动。');
+    else if (s.haltCollect) L.push('采集现在是暂停状态，在面板点「▶ 恢复采集」才会继续。');
+    if (!waiting && !active) { L.push('这一批已经全部处理完，再点一次「开始体检」看看结果。'); if (!run.doneAt) await chrome.storage.local.set({ healthRun: { ...run, doneAt: Date.now() } }); }
+    box.textContent = L.join('\n');
+    if ((waiting || active) && !healthTimer) healthTimer = setInterval(() => showHealthProgress().catch(() => {}), 5000);
+    if (!waiting && !active && healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+  }
+  showHealthProgress().catch(() => {});
 
   // ---------- 核对取证指纹 ----------
   $('fpCheck').onclick = () => guard('fpOut', async () => {

@@ -22,6 +22,8 @@ const SWEEP_MINUTES = 15;
 const FAIL_RETRY_MS = 24 * 60 * 60 * 1000;
 // 4.4.0：被跳过的帖子按连续失败次数加倍冷却（1、2、4、8 天，最长 14 天），巡查期间不再反复重排
 const failCooldownMs = (rec) => Math.min(14 * 86400000, FAIL_RETRY_MS * 2 ** Math.max(0, (rec.failStreak || 1) - 1));
+// 4.4.4：论坛回复数没超过上次读到最后一页时的数，说明没有新回复（少的楼是论坛删楼），不用再读
+const noNewSinceCheck = (rec, replies) => !!(rec && rec.checkedReplies != null && replies != null && replies <= rec.checkedReplies);
 const inFailCooldown = (rec) => !!(rec && rec.failReason && Date.now() - (rec.failedAt || 0) < failCooldownMs(rec)); // 帖子被判「没权限」后，一天内巡查不会再自动重新排它
 let running = false;   // 正在逐页采集/跟进
 let sweeping = false;  // 正在巡查板块列表
@@ -122,7 +124,13 @@ async function fetchHtml(url, purpose = 'collect') {
     throw Object.assign(new Error(login ? '等待人工登录' : '等待人工验证'), { challenge: true, needLogin: login });
   }
   if (!res.ok) throw Object.assign(new Error('页面返回 ' + res.status), { status: res.status });
-  if (/您无权进行当前操作/.test(html)) throw Object.assign(new Error('没有权限查看这一页，已跳过'), { permanent: true, noPermission: true });
+  if (/您无权进行当前操作/.test(html)) {
+    // 4.4.3：把论坛给的具体原因记下来（比如「历史帖子需要登录后才能浏览」、用户组没有权限），方便判断是论坛规则还是插件问题
+    const why = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ')
+      .match(/原因之一造成[:：]?\s*(.{2,60}?)(?:\s(?:您还没有登录|会员登录|用户名)|$)/);
+    const reason = why ? why[1].trim() : '';
+    throw Object.assign(new Error('没有权限查看这一页' + (reason ? '（论坛说：' + reason + '）' : '') + '，已跳过'), { permanent: true, noPermission: true, historyLocked: /历史帖子/.test(reason) });
+  }
   // 4.2.2：论坛的「提示信息」页（如老帖 t730753 返回「未定义操作，请返回」），换任何地址都一样，
   // 是帖子本身坏了/被删了，不是临时故障——直接记下论坛原话跳过，不再反复重试。
   const notice = forumNotice(html);
@@ -279,10 +287,11 @@ async function enqueueThreads(threads) {
   const fileKnown = await fileKnownFloors(threads.map((t) => String(t.tid)).filter((t) => /^\d+$/.test(t)));
   const q = await Safety.update('queue', async q => { const have = new Set(q.map(x => String(x.tid))); for (const t of threads) {
     if (!/^\d+$/.test(String(t.tid)) || !/^\d+$/.test(String(t.fid))) throw new Error('帖子编号无效');
-    if (have.has(String(t.tid))) continue; have.add(String(t.tid));
+    if (have.has(String(t.tid))) { if (t.full) { const ex = q.find(x => String(x.tid) === String(t.tid)); if (ex) { ex.from = 1; ex.full = true; } } continue; } // 4.4.2：整帖重采覆盖已排队的增量任务
+    have.add(String(t.tid));
     const rec = await get(key(t.tid), null);
     const known = Math.max(storeKnown(rec), fileKnown[String(t.tid)] || 0);
-    q.push({tid:String(t.tid),fid:String(t.fid),title:String(t.title || '').slice(0,200),from:t.full?1:Math.max(1,Math.ceil(known/PER_PAGE))});
+    q.push({tid:String(t.tid),fid:String(t.fid),title:String(t.title || '').slice(0,200),from:t.full?1:Math.max(1,Math.ceil(known/PER_PAGE)),...(t.full?{full:true}:{})});
   } return q; }, []);
   runJob();
   return q;
@@ -647,6 +656,16 @@ async function runJob() {
         // 采完都写一次文件。
         if (rec && cur.toEnd && (cur.startPage || 1) === 1) await markHidden(cur.tid, cur.startedAt);
         if (rec) { try { await saveImages(cur.tid); } catch (e) { await Safety.event('images_failed', { tid: cur.tid, error: e.message }); } }
+        // 4.4.4：读到最后一页就记下「核对时论坛的回复数」；从第 1 页整帖读完的，再记一个「已核对」标记。
+        // 之后巡查、跟进只要论坛回复数没超过这个数，就不再因为「楼数比回复数少」（论坛删楼）反复去读。
+        if (rec && cur.toEnd) await Safety.update(key(cur.tid), r => {
+          if (!r) return r;
+          const replies = Number.isFinite(r.thread?.replies) ? r.thread.replies : null;
+          const maxFloor = Math.max(0, ...r.floors.map((f) => f.floor || 0));
+          if (replies != null) { r.checkedReplies = replies; r.checkedAt = Date.now(); }
+          if ((cur.startPage || 1) === 1 && replies != null) r.verified = { at: Date.now(), replies, maxFloor, gap: Math.max(0, replies + 1 - maxFloor) };
+          return r;
+        }, null);
         const rec2 = await get(key(cur.tid), null);
         if (rec2) await autoExport(rec2, captureOf(cur, true));
         cur.state = 'done'; cur.finishedAt = Date.now();
@@ -768,7 +787,7 @@ async function checkWatched() {
       const r = await parse('thread', html, t.tid, 1);
       const replies = r.meta && r.meta.replies;
       const known = Math.max(0, ...rec.floors.map((f) => f.floor || 0));
-      if (replies != null && replies + 1 > known) {
+      if (replies != null && replies + 1 > known && !noNewSinceCheck(rec, replies)) {
         await Safety.update('queue', q => { if (!q.some(x => x.tid === t.tid)) q.push({ tid:t.tid, fid:t.fid, title:t.title, from:Math.max(1,Math.ceil(known/PER_PAGE)) }); return q; }, []);
         rec.newFloors = replies + 1 - known;
         await chrome.storage.local.set({ [k]: rec });
@@ -848,7 +867,7 @@ async function sweepBoard(manual) {
         newThreads++;
       } else {
         const known = Math.max(storeKnown(rec), fk);
-        if (row.replies + 1 > known) {
+        if (row.replies + 1 > known && !noNewSinceCheck(rec, row.replies)) {
           q.push({ tid: row.tid, fid: row.fid, title: row.title, from: Math.max(1, Math.ceil(known / PER_PAGE)) });
           busy.add(row.tid);
           updatedThreads++;

@@ -1,0 +1,116 @@
+{
+  "syntax": [
+    {
+      "file": "background.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "fs.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "md.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "offscreen.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "options.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "parser.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "popup-post.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "popup.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "poster.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "posting-bulk.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "posting.js",
+      "syntax_ok": true,
+      "error": ""
+    },
+    {
+      "file": "sw.js",
+      "syntax_ok": true,
+      "error": ""
+    }
+  ],
+  "scripts": [
+    {
+      "html": "offscreen.html",
+      "script": "parser.js",
+      "exists": true
+    },
+    {
+      "html": "offscreen.html",
+      "script": "offscreen.js",
+      "exists": true
+    },
+    {
+      "html": "posting.html",
+      "script": "posting.js",
+      "exists": true
+    },
+    {
+      "html": "posting.html",
+      "script": "posting-bulk.js",
+      "exists": true
+    },
+    {
+      "html": "popup.html",
+      "script": "md.js",
+      "exists": true
+    },
+    {
+      "html": "popup.html",
+      "script": "fs.js",
+      "exists": true
+    },
+    {
+      "html": "popup.html",
+      "script": "popup.js",
+      "exists": true
+    },
+    {
+      "html": "popup.html",
+      "script": "popup-post.js",
+      "exists": true
+    },
+    {
+      "html": "options.html",
+      "script": "fs.js",
+      "exists": true
+    },
+    {
+      "html": "options.html",
+      "script": "options.js",
+      "exists": true
+    }
+  ]
+}

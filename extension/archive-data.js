@@ -87,6 +87,16 @@
   // 4.4.0：同一个存档文件夹只能由一个浏览器里的插件写机读数据（不同浏览器之间文件锁不共享，
   // 11 月 2 日就出现过两边同时写、清单互相覆盖丢条目）。写之前登记「写入方」，别人 3 分钟内写过就不写，报错提示。
   const LEASE_MS = 3 * 60000;
+  // 4.4.5：清掉一小时以前留下的 Chrome 临时文件（*.crswap，写入失败时残留的空文件），半小时最多一次
+  let lastSweepSwap = 0;
+  async function cleanSwap(d) {
+    if (Date.now() - lastSweepSwap < 30 * 60000) return; lastSweepSwap = Date.now();
+    for (const dd of [d, await sub(d, JOURNAL)]) {
+      const old = [];
+      for await (const [n, h] of dd.entries()) if (h.kind === 'file' && /\.crswap$/.test(n)) { try { const f = await h.getFile(); if (Date.now() - f.lastModified > 3600000) old.push(n); } catch (e) { /* 跳过 */ } }
+      for (const n of old) { try { await dd.removeEntry(n); } catch (e) { /* 删不掉就算了 */ } }
+    }
+  }
   async function claimWriter(data, instanceId) {
     if (!instanceId) return;
     const w = await readJson(data, 'writer.json');
@@ -95,7 +105,9 @@
       const e = new Error('另一个浏览器里的插件也在写这个存档文件夹，为避免互相覆盖，本次没有更新机读数据。请只在一个浏览器里开采集。');
       e.otherWriter = true; throw e;
     }
-    await writeText(data, 'writer.json', JSON.stringify({ instanceId, at: now, note: '正在写机读数据的插件实例；3 分钟内有效' }));
+    // 4.4.5：1 分钟内续过租约就不再每次重写 writer.json
+    if (!(w && w.instanceId === instanceId && now - (w.at || 0) < 60000)) await writeText(data, 'writer.json', JSON.stringify({ instanceId, at: now, note: '正在写机读数据的插件实例；3 分钟内有效' }));
+    cleanSwap(data).catch(() => {});
   }
 
   async function source(data) {
@@ -204,6 +216,22 @@
     };
   }
 
+  // 4.4.2：楼层核对信息。整帖从第 1 页采到最后一页成功时记 lastFull（当时论坛回复数、存到的最大楼号、差额、中间缺号数），
+  // 之后的增量采集沿用上一次的 lastFull。存档体检据此判断「比论坛少的楼」是论坛删楼/不可见（已核对），还是真的没采全。
+  function floorStats(rec) {
+    const nums = [...rec.floors.map((f) => f.floor), ...rec.foldedFloors.map((f) => f.floor)].filter((n) => Number.isFinite(n));
+    const maxFloor = nums.length ? Math.max(...nums) : 0; const have = new Set(nums);
+    let holes = 0; for (let i = 1; i <= maxFloor; i++) if (!have.has(i)) holes++;
+    const replies = Number.isFinite(rec.replies) ? rec.replies : null;
+    return { maxFloor, holes, replies, gap: replies != null && replies + 1 > maxFloor ? replies + 1 - maxFloor : 0 };
+  }
+
+  // 4.4.6：逐帖 JSON 的实际内容是否和清单记录的校验值一致（写了 JSON、清单没写成时会不一致）
+  async function jsonOk(tdir, tid, want) {
+    if (!want) return false;
+    try { return (await sha256(await (await (await tdir.getFileHandle(tid + '.json')).getFile()).text())) === want; } catch (e) { return false; }
+  }
+
   // 正文 Markdown 已经写好之后调用：生成逐帖 JSON、记日志、更新清单（最后一步＝就绪）
   async function publish(dir, { tid, fileName, mdText, capture, floorSeqs, instanceId }) {
     return locked(async () => {
@@ -214,7 +242,13 @@
       if (!p || String(p.fields.tid) !== String(tid)) throw new Error('机读存档：Markdown 解析失败');
       const prev = m.threads[tid] || {};
       const mdSha256 = await sha256(mdText);
-      const revision = (prev.revision || 0) + 1;
+      const known = capture && capture.known !== false;
+      // 4.4.5：正文没变、这次也不是一次有采集信息的读取（补写、手动导出）时什么都不写——
+      // 以前补写几百个没变的帖子，每个都要重写一遍几 MB 的清单，插件会卡住好几分钟
+      if (prev.mdSha256 === mdSha256 && prev.jsonSha256 && !known && !events.length && await jsonOk(tdir, String(tid), prev.jsonSha256)) {
+        return { seq: m.seq, revision: prev.revision, generation: m.generation, sourceId: src.sourceId, coverage: m.coverage, rebuilding: !!m.rebuilding, unchanged: true };
+      }
+      const revision = prev.mdSha256 === mdSha256 && prev.revision ? prev.revision : (prev.revision || 0) + 1; // 正文没变不升版本
       const rec = threadFromParsed(p, { fileName, capture, sourceId: src.sourceId, revision, mdSha256 });
       rec.writtenAt = isoNow();
       const jsonText = JSON.stringify(rec);
@@ -224,9 +258,11 @@
       const complete = capture && capture.known !== false ? !!capture.complete : null;
       await journalAppend(data, m, [...events,
         { seq, gen: m.generation, at: rec.writtenAt, type: 'thread', tid: String(tid), revision, mdFile: fileName, mdSha256, jsonSha256, complete }]);
+      const fs = floorStats(rec);
+      const lastFull = complete === true ? { at: rec.writtenAt, replies: fs.replies, maxFloor: fs.maxFloor, gap: fs.gap, holes: fs.holes } : (prev.lastFull || null);
       m.threads[tid] = { revision, seq, mdFile: fileName, mdSha256, jsonFile: `${THREADS}/${tid}.json`, jsonSha256,
-        capturedAt: rec.capturedAt, writtenAt: rec.writtenAt, floorCount: rec.floorCount, complete, capture: capture || { known: false },
-        lastFailure: prev.lastFailure || null };
+        capturedAt: rec.capturedAt, writtenAt: rec.writtenAt, floorCount: rec.floorCount, maxFloor: fs.maxFloor, replies: fs.replies,
+        complete, lastFull, lastFailure: prev.lastFailure || null }; // 4.4.5：采集详情只放逐帖 JSON，清单保持精简
       m.updatedAt = rec.writtenAt; delete m.created;
       await writeText(data, 'manifest.json', JSON.stringify(m));
       return { seq, revision, generation: m.generation, sourceId: src.sourceId, coverage: m.coverage, rebuilding: !!m.rebuilding };
@@ -239,7 +275,7 @@
       const data = await sub(dir, DATA); await claimWriter(data, instanceId); const src = await source(data); const m = await loadManifest(data, src);
       const events = guardRollback(m, (floorSeqs || {})[src.sourceId]);
       const at = isoNow(); const seq = ++m.seq;
-      const failure = { at, reason: String(reason || '').slice(0, 300), capture: capture || { known: false } };
+      const failure = { at, reason: String(reason || '').slice(0, 300) };
       await journalAppend(data, m, [...events, { seq, gen: m.generation, at, type: 'failed', tid: String(tid), fid: fid ? String(fid) : null, reason: failure.reason }]);
       m.threads[tid] = { ...(m.threads[tid] || { revision: 0, mdFile: null, jsonFile: null }), lastFailure: failure, seq };
       m.updatedAt = at; delete m.created;
@@ -270,7 +306,7 @@
         if ((A().T_NAME.exec(name) || [])[1] !== tid) { if (m.rebuilding) (m.rebuilding.bad = m.rebuilding.bad || {})[name] = 1; continue; } // 文件名和内容的帖子号对不上：不收录，单独列出
         if (m.rebuilding) m.rebuilding.seen[tid] = 1;
         const mdSha256 = await sha256(text);
-        if (prev.mdSha256 === mdSha256 && prev.mdFile === name && prev.jsonSha256) continue; // 没变
+        if (prev.mdSha256 === mdSha256 && prev.mdFile === name && await jsonOk(tdir, tid, prev.jsonSha256)) continue; // 没变（4.4.6：JSON 也得对得上）
         const revision = (prev.revision || 0) + (prev.mdSha256 === mdSha256 ? 0 : 1) || 1;
         const rec = threadFromParsed(p, { fileName: name, capture: { known: false, source: 'rebuild' }, sourceId: src.sourceId, revision, mdSha256 });
         rec.writtenAt = isoNow();
@@ -278,8 +314,10 @@
         await writeText(tdir, tid + '.json', jsonText);
         const seq = ++m.seq;
         entries.push({ seq, gen: m.generation, at: rec.writtenAt, type: 'thread', tid, revision, mdFile: name, mdSha256, jsonSha256, complete: null, source: 'rebuild' });
+        const fs = floorStats(rec);
         m.threads[tid] = { revision, seq, mdFile: name, mdSha256, jsonFile: `${THREADS}/${tid}.json`, jsonSha256, capturedAt: rec.capturedAt,
-          writtenAt: rec.writtenAt, floorCount: rec.floorCount, complete: null, capture: rec.capture, lastFailure: prev.lastFailure || null };
+          writtenAt: rec.writtenAt, floorCount: rec.floorCount, maxFloor: fs.maxFloor, replies: fs.replies, complete: null,
+          lastFull: prev.lastFull || null, lastFailure: prev.lastFailure || null };
       }
       const done = batch.length < limit;
       if (!done && m.rebuilding) m.rebuilding.next = batch[batch.length - 1];

@@ -17,7 +17,7 @@
 <section><h2>按 ID 补采</h2><p class="muted">打开论坛上这个 ID 的发帖搜索页，再点插件图标，勾选后批量采集。ID 的论坛编号从已存的楼层里找；找不到时可以直接填编号。</p>
 <div class="row"><label>ID 或论坛编号 <input id="uidName" autocomplete="off"></label><button id="openUid">打开他的发帖列表</button></div><p id="uidNote" class="muted"></p></section>
 <section><h2>存档体检</h2><p class="muted">检查重复文件、坏文件、缺楼的帖子，可以一键修复（合并重复、把缺楼的帖子整帖重采）。</p>
-<div class="row"><button id="check">开始体检</button><button id="fixDup" hidden>合并重复文件</button><button id="fixGap" hidden>整帖重采缺楼的帖子</button></div><pre id="checkOut"></pre></section>
+<div class="row"><button id="check">开始体检</button><button id="fixDup" hidden>合并重复文件</button><button id="fixGap" hidden>整帖重采缺楼的帖子</button></div><pre id="checkOut"></pre><pre id="healthProgress"></pre></section>
 <section><h2>核对取证指纹</h2><p class="muted">核对某个帖子的存档文件：每层楼的正文和采集时记下的指纹是否一致（一致＝存档后没被改过）。</p>
 <div class="row"><label>帖子编号 <input id="fpTid" autocomplete="off" placeholder="例如 9085235"></label><button id="fpCheck">核对</button></div><pre id="fpOut"></pre></section>
 <div id="addons"></div>

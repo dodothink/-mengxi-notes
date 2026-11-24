@@ -193,3 +193,41 @@ test('4.4.1: a file whose name and content disagree on tid is listed as unparsab
  d.put(name(501),doc(501,'2026-09-01 11:00',[[1,'a']]));d.put(name(502),doc(999,'2026-09-01 11:00',[[1,'b']]));
  await rebuildAll(c,d,10);const m=manifest(d);assert.equal(m.coverage,'full');assert.equal(m.unparsable.join(),name(502));assert.equal(m.threads['999'],undefined);
 });
+test('4.4.2: a full capture records lastFull (forum replies, max floor, gap); later incremental captures keep it',async()=>{
+ const c=load(),d=dirHandle();
+ const full={known:true,ok:true,complete:true,scope:'full',pagesRead:[1,1]};
+ // 论坛说 3 条回复（共 4 楼），实际只读到 1、2、4 楼：3 楼被删
+ await write(c,d,77,'2026-09-01 11:00',[[1,'a'],[2,'b'],[4,'d']],{capture:full});
+ let e=manifest(d).threads['77'];assert.equal(e.maxFloor,4);assert.equal(e.lastFull.maxFloor,4);assert.equal(e.lastFull.holes,1);
+ await write(c,d,77,'2026-09-01 12:00',[[1,'a'],[2,'b'],[4,'d'],[5,'e']],{capture:{known:true,ok:true,complete:false,scope:'incremental'}});
+ e=manifest(d).threads['77'];assert.equal(e.maxFloor,5);assert.equal(e.lastFull.maxFloor,4,'kept from the full capture');
+});
+test('4.4.5: re-writing a thread whose text did not change (back-fill, manual export) touches nothing in _data and keeps the revision',async()=>{
+ const c=load(),d=dirHandle();
+ await write(c,d,5,'2026-09-01 11:00',[[1,'a']]);await write(c,d,5,'2026-09-01 11:00',[[1,'a']]); // 第二次起是合并后的稳定文本
+ const m0=data(d).get('manifest.json');const j0=journal(d).length;const rev0=manifest(d).threads['5'].revision;
+ const r=await write(c,d,5,'2026-09-01 11:00',[[1,'a']]);
+ assert.equal(r.data.unchanged,true);assert.equal(data(d).get('manifest.json'),m0);assert.equal(journal(d).length,j0);
+ const r2=await write(c,d,5,'2026-09-01 11:00',[[1,'a']],{capture:{known:true,ok:true,complete:true}});
+ assert.equal(r2.data.revision,rev0,'same text: same revision');assert.equal(manifest(d).threads['5'].complete,true);assert.equal(manifest(d).threads['5'].capture,undefined,'manifest stays compact');
+});
+test('4.4.5: health-check style reading survives a file that is being rewritten (NotReadableError) by retrying',async()=>{
+ const c=load(),d=dirHandle();
+ d.put(name(1),doc(1,'2026-09-01 11:00',[[1,'a']]));d.failRead={[name(1)]:2};
+ const h=await d.getFileHandle(name(1));let last;for(let i=0;i<4;i++){try{last=await (await h.getFile()).text();break;}catch(e){assert.equal(e.name,'NotReadableError');}}
+ assert.ok(last&&last.includes('tid: 1'));
+});
+
+test('4.4.6: a JSON file that no longer matches the manifest (JSON written, manifest write lost) is repaired by the next write and by rebuild',async()=>{
+ const c=load(),d=dirHandle();
+ await write(c,d,7,'2026-09-01 11:00',[[1,'a']]);await write(c,d,7,'2026-09-01 11:00',[[1,'a']]);
+ const t=data(d).dirs.get('threads');const good=t.get('7.json');
+ t.put('7.json',good.replace('"writtenAt":"','"writtenAt":"X'));            // 模拟：JSON 已换新、清单还是旧的
+ const bad=()=>sha(t.get('7.json'))!==manifest(d).threads['7'].jsonSha256;
+ assert.ok(bad());
+ const r=await write(c,d,7,'2026-09-01 11:00',[[1,'a']]);
+ assert.notEqual(r.data.unchanged,true,'mismatch must not be skipped');assert.ok(!bad(),'next write repairs it');
+ const rev=manifest(d).threads['7'].revision;
+ t.put('7.json','{"broken":');assert.ok(bad());
+ await rebuildAll(c,d);assert.ok(!bad(),'rebuild repairs it');assert.equal(manifest(d).threads['7'].revision,rev,'same text keeps revision');
+});
